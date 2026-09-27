@@ -37,6 +37,16 @@ checked-out branch before judging anything.
    `errors` entry and every gate body you cannot read as a caveat, never as "no
    gates". A correction round or the project gate can go red after the body was
    written, and a reviewer must not have to discover that from a red badge.
+5. Reconcile historical gate caveats with the authoritative final state. Inspect
+   every later gate for the same stage and the final CI/check state on
+   `$INPUTS.pr`. When a later gate is green and all current required checks pass,
+   do not leave an earlier red disclosure phrased as a current blocker: remove it
+   if it adds no enduring information, or label it explicitly as resolved and
+   name the later green evidence. Never erase the historical red artifact itself
+   and never call a caveat resolved while a current required check is red,
+   pending, missing, or unreadable.
+6. Preserve exactly one stable Jira ownership marker when one already exists:
+   `<!-- archon-jira-job:... -->`. Do not remove, duplicate, or alter its job ID.
 
 Before finishing, re-read your intended final body once against the diff: every
 mechanism it describes must be one the diff actually contains.
