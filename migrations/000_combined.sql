@@ -71,7 +71,7 @@ COMMENT ON TABLE remote_agent_codebase_env_vars IS
   'Per-project env vars merged into Options.env on Claude SDK calls. Managed via Web UI or config.';
 
 -- ============================================================================
--- Table 1c: Users (Archon identity, platform-agnostic)
+-- Table 1d: Users (Archon identity, platform-agnostic)
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS remote_agent_users (
@@ -203,6 +203,51 @@ CREATE TABLE IF NOT EXISTS remote_agent_workflow_runs (
 
 COMMENT ON TABLE remote_agent_workflow_runs IS
   'Tracks workflow execution state for resumption and observability';
+
+-- ============================================================================
+-- Table 5b: Native Jira queue configuration and issue/run linkage
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS remote_agent_jira_configs (
+  codebase_id UUID PRIMARY KEY REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+  config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  run_as_user_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_jira_jobs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  codebase_id UUID NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+  issue_id VARCHAR(255) NOT NULL,
+  issue_key VARCHAR(255) NOT NULL,
+  source_revision VARCHAR(255) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'claimed'
+    CHECK (status IN ('claimed', 'queued', 'running', 'succeeded', 'failed', 'conflicted')),
+  workflow_run_id UUID REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+  branch_name VARCHAR(255),
+  pr_url TEXT,
+  conflict_detail TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  completion_pending BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  completed_at TIMESTAMP WITH TIME ZONE,
+  UNIQUE(codebase_id, issue_id, source_revision)
+);
+
+ALTER TABLE remote_agent_jira_jobs
+  ADD COLUMN IF NOT EXISTS completion_pending BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS remote_agent_jira_job_runs (
+  job_id UUID NOT NULL REFERENCES remote_agent_jira_jobs(id) ON DELETE CASCADE,
+  workflow_run_id UUID NOT NULL UNIQUE REFERENCES remote_agent_workflow_runs(id) ON DELETE CASCADE,
+  predecessor_run_id UUID REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+  role VARCHAR(20) NOT NULL CHECK (role IN ('initial', 'correction', 'recovery')),
+  attached_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  PRIMARY KEY (job_id, workflow_run_id)
+);
 
 -- ============================================================================
 -- Table 6: Workflow Events
@@ -695,6 +740,14 @@ CREATE TABLE IF NOT EXISTS remote_agent_auth_verification (
 -- Codebase env vars
 CREATE INDEX IF NOT EXISTS idx_codebase_env_vars_codebase_id
   ON remote_agent_codebase_env_vars(codebase_id);
+
+-- Native Jira queue
+CREATE INDEX IF NOT EXISTS idx_jira_jobs_codebase_status
+  ON remote_agent_jira_jobs(codebase_id, status);
+CREATE INDEX IF NOT EXISTS idx_jira_jobs_workflow_run
+  ON remote_agent_jira_jobs(workflow_run_id);
+CREATE INDEX IF NOT EXISTS idx_jira_job_runs_job
+  ON remote_agent_jira_job_runs(job_id, attached_at);
 
 -- User identities
 CREATE INDEX IF NOT EXISTS idx_user_identities_user_id

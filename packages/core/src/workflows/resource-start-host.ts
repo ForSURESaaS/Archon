@@ -74,6 +74,7 @@ import { getDecryptedAccessToken } from '../db/user-github-token-store';
 import * as workflowDb from '../db/workflows';
 import { isPerUserGitHubEnabled } from '../github-auth/config';
 import { registerRepository } from '../handlers/clone';
+import { resolveWorkflowAdoption } from '../operations/workflow-adoption';
 import { ensureIsolationConfigured } from '../orchestrator/orchestrator';
 import { startRunLiveOwner, type RunLiveOwner } from '../services/run-live-owner';
 import { createChildWorktreeResolver } from './child-isolation-resolver';
@@ -224,9 +225,12 @@ async function prepareBinding(
         workflow_name: workflow.name,
         conversation_id: conversation.id,
         codebase_id: codebase.id,
-        // Provenance is `metadata.resource_start`; a trigger supplies no user message.
-        user_message: '',
+        // Resource starts have no interactive chat message, but `work` is the authored
+        // request handed to delivery workflows. Preserve it on the run so operator
+        // surfaces show what the agent received before its first engine event.
+        user_message: typeof inputs.work === 'string' ? inputs.work : '',
         metadata,
+        ...(intent.launch.adoptRunId ? { adopted_from_run_id: intent.launch.adoptRunId } : {}),
         ...(isolation.kind === 'in-place' ? { working_path: cwd } : {}),
         user_id: intent.runAsUserId,
       },
@@ -355,9 +359,13 @@ async function worktreeLane(
     taskBranch:
       lane.branch || fromBranch
         ? {
-            kind: 'new',
-            ...(lane.branch ? { branch: toBranchName(lane.branch) } : {}),
-            ...(fromBranch ? { fromBranch } : {}),
+            ...(lane.branch && !fromBranch
+              ? { kind: 'existing' as const, branch: toBranchName(lane.branch) }
+              : {
+                  kind: 'new' as const,
+                  ...(lane.branch ? { branch: toBranchName(lane.branch) } : {}),
+                  ...(fromBranch ? { fromBranch } : {}),
+                }),
           }
         : undefined,
     baseBranch: codebase.default_branch?.trim()
@@ -418,8 +426,9 @@ export interface StartAdmittedResourceStartInput {
  * is the execution fence: if another starter already claimed the run, or its request
  * was withdrawn from the slot, the engine refuses before any node runs.
  *
- * A failure before submission leaves the run pending and holding its slot. Only the
- * operator can tell whether to retry it or abandon it, so this never marks it failed.
+ * A failure before submission is terminal for this admitted attempt. Persisting that
+ * boundary prevents operator surfaces from displaying a dead run as indefinitely
+ * pending and lets resource-slot accounting move on.
  */
 export async function startAdmittedResourceStart(
   input: StartAdmittedResourceStartInput
@@ -443,21 +452,68 @@ export async function startAdmittedResourceStart(
     conversationDbId: run.conversation_id,
   });
   const lane = launch.execution.isolation;
-  const execution =
-    lane.kind === 'worktree'
-      ? await worktreeLane(
-          lane,
-          codebase,
-          `${run.workflow_name}-${run.id.slice(0, 8)}`,
-          platform.getPlatformType(),
-          launch.run.user_id
-        )
-      : { cwd: launch.execution.cwd, envId: undefined, cutFromCommit: undefined };
+  const adoption = launch.run.adopted_from_run_id
+    ? await resolveWorkflowAdoption({
+        adoptedRunId: launch.run.adopted_from_run_id,
+        codebaseId: codebase.id,
+        codebasePath: codebase.default_cwd,
+        codebaseKind: codebase.kind,
+      })
+    : undefined;
+  await platform.sendMessage(
+    launch.execution.conversationId,
+    launch.run.user_message
+      ? `Request received. Preparing ${lane.kind === 'worktree' ? 'an isolated worktree' : 'the project checkout'} before starting the agent.`
+      : `Preparing ${lane.kind === 'worktree' ? 'an isolated worktree' : 'the project checkout'} before starting the agent.`
+  );
+  let execution: { cwd: string; envId: string | undefined; cutFromCommit?: string };
+  try {
+    execution =
+      adoption?.lane.kind === 'reuse-worktree'
+        ? {
+            cwd: adoption.lane.workingPath,
+            envId: adoption.lane.envId,
+            cutFromCommit: undefined,
+          }
+        : adoption?.lane.kind === 'checkout-branch'
+          ? await worktreeLane(
+              { kind: 'worktree', branch: adoption.lane.taskBranch.branch },
+              codebase,
+              `${run.workflow_name}-${run.id.slice(0, 8)}`,
+              platform.getPlatformType(),
+              launch.run.user_id
+            )
+          : adoption?.lane.kind === 'in-place'
+            ? { cwd: launch.execution.cwd, envId: undefined, cutFromCommit: undefined }
+            : lane.kind === 'worktree'
+              ? await worktreeLane(
+                  lane,
+                  codebase,
+                  `${run.workflow_name}-${run.id.slice(0, 8)}`,
+                  platform.getPlatformType(),
+                  launch.run.user_id
+                )
+              : { cwd: launch.execution.cwd, envId: undefined, cutFromCommit: undefined };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await platform.sendMessage(
+      launch.execution.conversationId,
+      `Agent launch failed while preparing the checkout: ${message}`
+    );
+    await workflowDb.failWorkflowRun(run.id, `Checkout preparation failed: ${message}`, {
+      exitReason: 'launch_failed',
+    });
+    throw error;
+  }
   await conversationDb.updateConversation(run.conversation_id, {
     cwd: execution.cwd,
     codebase_id: codebase.id,
     isolation_env_id: execution.envId ?? null,
   });
+  await platform.sendMessage(
+    launch.execution.conversationId,
+    `Checkout ready at ${execution.cwd}. Starting the workflow agent.`
+  );
 
   const sealed = readWorkflowRunConfigMetadata(run.metadata);
   const baseBranch = codebase.default_branch?.trim() || undefined;
@@ -479,6 +535,9 @@ export async function startAdmittedResourceStart(
         codebaseId: codebase.id,
         userId: launch.run.user_id,
         baseBranch,
+        ...(run.adopted_from_run_id
+          ? { adoptedFromRunId: run.adopted_from_run_id, continuationMode: 'adopt' as const }
+          : {}),
         ...(execution.cutFromCommit !== undefined
           ? { cutFromCommit: execution.cutFromCommit }
           : {}),

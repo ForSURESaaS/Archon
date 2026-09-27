@@ -84,7 +84,11 @@ async function admitResourceStartWithQuery(
   query: Query,
   intent: ResourceStartIntent
 ): Promise<ResourceStartDisposition> {
-  const { capacity } = await lockResourceSlot(query, intent.resource, intent.capacity);
+  const { capacity } = await lockResourceSlot(
+    query,
+    intent.resource,
+    intent.capacityMode === 'configured' ? undefined : intent.capacity
+  );
   const existing = await query<RequestRow>(
     'SELECT * FROM remote_agent_resource_start_requests WHERE id = $1',
     [intent.launch.run.id]
@@ -505,6 +509,7 @@ export async function completeStartBindingPreparation(input: {
     const disposition = await admitResourceStartWithQuery(query, {
       resource: persisted.resource,
       capacity: persisted.capacity,
+      capacityMode: persisted.capacityMode,
       hostId: persisted.hostId,
       overlap: persisted.overlap,
       launch: input.launch,
