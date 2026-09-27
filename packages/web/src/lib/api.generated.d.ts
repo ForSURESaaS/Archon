@@ -3207,6 +3207,355 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/codebases/{id}/jira/config': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Jira queue configuration */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraConfigResponse'];
+          };
+        };
+      };
+    };
+    put: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['JiraConfigUpdate'];
+        };
+      };
+      responses: {
+        /** @description Saved Jira queue configuration */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraConfigResponse'];
+          };
+        };
+      };
+    };
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/jira/jobs/{jobId}/reconcile': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          jobId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Jira job lineage and completion effects reconciled */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraReconcileResponse'];
+          };
+        };
+        /** @description Jira job could not be reconciled */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              error: string;
+            };
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/jira/jobs/{jobId}/retry-correction': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          jobId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Failed PR correction retried */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraPrCommentsResponse'];
+          };
+        };
+        /** @description Failed correction could not be retried */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              error: string;
+            };
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/jira/enabled': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['JiraEnabledUpdate'];
+        };
+      };
+      responses: {
+        /** @description Automation setting */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              success: boolean;
+            };
+          };
+        };
+        /** @description Configuration required */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              error: string;
+            };
+          };
+        };
+      };
+    };
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/jira/issues': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Configured sprint issues */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraQueueResponse'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/jira/dispatch/{key}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          key: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Ticket claimed and dispatched */
+        202: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraDispatchResponse'];
+          };
+        };
+        /** @description Ticket could not be dispatched */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              error: string;
+            };
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/jira/pr-comments/{key}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          key: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description PR comments checked and correction dispatched if needed */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraPrCommentsResponse'];
+          };
+        };
+        /** @description PR comments could not be checked */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              error: string;
+            };
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4874,6 +5223,149 @@ export interface components {
       currentVersion: string;
       latestVersion: string;
       releaseUrl: string;
+    };
+    JiraConfigResponse: {
+      configured: boolean;
+      credentialsConfigured: boolean;
+      enabled: boolean;
+      runAsUserId: string | null;
+      config: components['schemas']['JiraQueueConfig'];
+      lastError: string | null;
+    };
+    JiraQueueConfig: {
+      /** Format: uri */
+      url: string;
+      project: string;
+      board: {
+        /** @default null */
+        id: string | null;
+        /** @default null */
+        name: string | null;
+      };
+      sprint: {
+        /** @default null */
+        id: string | null;
+        /** @default null */
+        name: string | null;
+        /**
+         * @default [
+         *       "active",
+         *       "future"
+         *     ]
+         */
+        allowed_states: ('active' | 'future' | 'closed')[];
+      };
+      ticket_selection: {
+        /**
+         * @default [
+         *       "Bug",
+         *       "Task",
+         *       "Story"
+         *     ]
+         */
+        issue_types: string[];
+        /**
+         * @default [
+         *       "TO DO"
+         *     ]
+         */
+        eligible_statuses: string[];
+        /**
+         * @default [
+         *       "DONE"
+         *     ]
+         */
+        excluded_statuses: string[];
+        /** @default  */
+        additional_jql: string;
+        /**
+         * @default [
+         *       "priority DESC",
+         *       "rank ASC",
+         *       "created ASC"
+         *     ]
+         */
+        order_by: string[];
+      };
+      workflow_states: {
+        /** @default IN PROGRESS */
+        claimed: string;
+        /** @default [] */
+        ready_for_manual_test_via: string[];
+        /** @default DONE */
+        ready_for_manual_test: string;
+        /**
+         * @default [
+         *       "DONE"
+         *     ]
+         */
+        terminal: string[];
+      };
+      automation: {
+        /** @default 60 */
+        poll_interval_seconds: number;
+        /** @default 1 */
+        concurrency: number;
+      };
+      branches: {
+        /** @default main */
+        base: string;
+        /** @default archon/{issue_key} */
+        ticket_pattern: string;
+      };
+      /** @default archon-deliver */
+      workflow: string;
+    };
+    JiraReconcileResponse: {
+      jobId: string;
+      runId: string | null;
+      status: string;
+    };
+    JiraPrCommentsResponse: {
+      found: number;
+      dispatched: boolean;
+      runId: string | null;
+    };
+    JiraConfigUpdate: {
+      config: components['schemas']['JiraQueueConfig'];
+    };
+    JiraEnabledUpdate: {
+      enabled: boolean;
+    };
+    JiraQueueResponse: {
+      issues: components['schemas']['JiraIssue'][];
+      enabled: boolean;
+      credentialsConfigured: boolean;
+      activeJobs: number;
+      concurrency: number;
+      lastError: string | null;
+    };
+    JiraIssue: {
+      id: string;
+      key: string;
+      summary: string;
+      description: string;
+      status: string;
+      issueType: string;
+      priority: string | null;
+      labels: string[];
+      updated: string;
+      url: string;
+      sourceRevision: string;
+      job: {
+        id: string;
+        status: string;
+        workflowRunId: string | null;
+        branchName: string | null;
+        prUrl: string | null;
+        conflictDetail: string | null;
+      } | null;
+    };
+    JiraDispatchResponse: {
+      accepted: boolean;
+      jobId: string;
+      runId: string | null;
+      status: string;
     };
   };
   responses: never;

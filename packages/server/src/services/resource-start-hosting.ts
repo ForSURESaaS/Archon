@@ -48,9 +48,10 @@ export function createServerResourceStartHost(
         }
       })
       .catch((error: unknown) => {
-        // A failure before the engine claims the run leaves it pending and holding its
-        // slot; nothing retries it. Name the run (a request's ID is its run's ID) and
-        // the command that shows the operator's retry and abandon options.
+        // A failure before the engine claims the run may leave it pending and holding its
+        // slot; name the run (a request's ID is its run's ID) and the command that shows
+        // the operator's retry and abandon options. Checkout failures are terminalized
+        // by the shared resource-start host before they reach this boundary.
         log.error(
           {
             err: error as Error,

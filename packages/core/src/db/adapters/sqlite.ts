@@ -300,6 +300,19 @@ export class SqliteAdapter implements IDatabase {
     // database missing a failed migration must NOT be stamped as fully applied
     // by this build, or the vintage becomes a wrong answer that gets believed.
     let allApplied = true;
+    try {
+      const jiraJobCols = this.prepareAll<{ name: string }>(
+        "PRAGMA table_info('remote_agent_jira_jobs')"
+      );
+      if (!jiraJobCols.some(column => column.name === 'completion_pending')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_jira_jobs ADD COLUMN completion_pending INTEGER NOT NULL DEFAULT 0'
+        );
+      }
+    } catch (e: unknown) {
+      getLog().warn({ err: e as Error }, 'db.sqlite_migration_jira_job_columns_failed');
+      allApplied = false;
+    }
     // Users columns. `role` is the web-auth identity seam (default 'admin').
     // Better Auth's own tables are PostgreSQL-only — web auth is never enabled
     // on SQLite — so only the role column is backfilled here.
@@ -834,6 +847,44 @@ export class SqliteAdapter implements IDatabase {
         checkout_baseline TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS remote_agent_jira_configs (
+        codebase_id TEXT PRIMARY KEY REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+        config TEXT NOT NULL DEFAULT '{}',
+        enabled INTEGER NOT NULL DEFAULT 0,
+        run_as_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS remote_agent_jira_jobs (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        codebase_id TEXT NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+        issue_id TEXT NOT NULL,
+        issue_key TEXT NOT NULL,
+        source_revision TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'claimed'
+          CHECK (status IN ('claimed', 'queued', 'running', 'succeeded', 'failed', 'conflicted')),
+        workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+        branch_name TEXT,
+        pr_url TEXT,
+        conflict_detail TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        completion_pending INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        completed_at TEXT,
+        UNIQUE(codebase_id, issue_id, source_revision)
+      );
+
+      CREATE TABLE IF NOT EXISTS remote_agent_jira_job_runs (
+        job_id TEXT NOT NULL REFERENCES remote_agent_jira_jobs(id) ON DELETE CASCADE,
+        workflow_run_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_workflow_runs(id) ON DELETE CASCADE,
+        predecessor_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+        role TEXT NOT NULL CHECK (role IN ('initial', 'correction', 'recovery')),
+        attached_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (job_id, workflow_run_id)
+      );
+
       CREATE TABLE IF NOT EXISTS remote_agent_start_receipts (
         id TEXT PRIMARY KEY,
         source_instance_id TEXT NOT NULL,
@@ -955,6 +1006,9 @@ export class SqliteAdapter implements IDatabase {
       CREATE INDEX IF NOT EXISTS idx_isolation_workflow ON remote_agent_isolation_environments(workflow_type, workflow_id);
       CREATE INDEX IF NOT EXISTS idx_workflow_runs_conversation ON remote_agent_workflow_runs(conversation_id);
       CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON remote_agent_workflow_runs(status);
+      CREATE INDEX IF NOT EXISTS idx_jira_jobs_codebase_status ON remote_agent_jira_jobs(codebase_id, status);
+      CREATE INDEX IF NOT EXISTS idx_jira_jobs_workflow_run ON remote_agent_jira_jobs(workflow_run_id);
+      CREATE INDEX IF NOT EXISTS idx_jira_job_runs_job ON remote_agent_jira_job_runs(job_id, attached_at);
       CREATE INDEX IF NOT EXISTS idx_workflow_events_run_id ON remote_agent_workflow_events(workflow_run_id);
       CREATE INDEX IF NOT EXISTS idx_workflow_events_type ON remote_agent_workflow_events(event_type);
       CREATE INDEX IF NOT EXISTS idx_workflow_events_created_at ON remote_agent_workflow_events(created_at);

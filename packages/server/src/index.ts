@@ -83,10 +83,11 @@ import { SSETransport } from './adapters/web/transport';
 import { WorkflowEventBridge } from './adapters/web/workflow-bridge';
 import { DashboardEventPoller } from './adapters/web/dashboard-event-poller';
 import { PgNotifyListener } from './adapters/web/pg-notify-listener';
-import { registerApiRoutes } from './routes/api';
+import { registerServerApiRoutes } from './routes/register';
 import { registerGithubWebhookRoute, registerWebhookSourceRoutes } from './routes/webhooks';
 import { loadWebhookSourcePlugins } from './services/webhook-source-plugins';
 import { createServerResourceStartHost } from './services/resource-start-hosting';
+import { JiraDispatcher } from './services/jira-dispatcher';
 import {
   startWorkflowContinuationScheduler,
   stopWorkflowContinuationScheduler,
@@ -713,13 +714,10 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
     ? await loadWebhookSourcePlugins(webhookSourcesConfigPath)
     : undefined;
   // Explicit only: bindings choose their execution host, so the server never guesses one.
-  const resourceStartHostId = process.env.ARCHON_TRIGGER_HOST?.trim();
-  const resourceStartHost = resourceStartHostId
-    ? createServerResourceStartHost(resourceStartHostId)
-    : undefined;
-  const requestResourceStartDrain = resourceStartHost
-    ? (): void => void resourceStartHost.requestDrain()
-    : undefined;
+  const resourceStartHostId = process.env.ARCHON_TRIGGER_HOST?.trim() || 'archon-server';
+  const resourceStartHost = createServerResourceStartHost(resourceStartHostId);
+  const requestResourceStartDrain = (): void => void resourceStartHost.requestDrain();
+  const jiraDispatcher = new JiraDispatcher(resourceStartHostId, resourceStartHost);
 
   // Global error handler for unhandled exceptions
   app.onError((err, c) => {
@@ -765,7 +763,8 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
   }
 
   // Register Web UI API routes
-  registerApiRoutes(app, webAdapter, lockManager, activePlatforms);
+  registerServerApiRoutes(app, webAdapter, lockManager, activePlatforms, jiraDispatcher);
+  jiraDispatcher.start();
 
   // GitHub webhook endpoint
   if (github) {
@@ -1034,14 +1033,14 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
     }
     return workflowResumeTargetForConversation(conversation, workflowPlatforms);
   }, requestResourceStartDrain);
-  if (resourceStartHostId)
-    getLog().info({ hostId: resourceStartHostId }, 'resource_start_host_enabled');
+  getLog().info({ hostId: resourceStartHostId }, 'resource_start_host_enabled');
 
   // Graceful shutdown
   const shutdown = (): void => {
     getLog().info('server_shutting_down');
     stopCleanupScheduler();
     stopWorkflowContinuationScheduler();
+    jiraDispatcher.stop();
     persistence.stopPeriodicFlush();
 
     // Flush all buffered messages before stopping adapters

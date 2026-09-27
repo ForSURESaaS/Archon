@@ -2,6 +2,13 @@ import { z } from '@hono/zod-openapi';
 import { jsonValueSchema } from '../output-ref';
 
 const jsonObjectSchema = z.record(z.string(), jsonValueSchema);
+// SQLite installations historically generated 32-hex IDs; both forms are valid
+// canonical run IDs and can appear in adoption ancestry after an upgrade.
+const workflowRunIdSchema = z
+  .string()
+  .regex(
+    /^(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$/
+  );
 const preparedIsolationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('in-place') }).strict(),
   z
@@ -25,6 +32,7 @@ export const preparedWorkflowLaunchSchema = z
         codebase_id: z.string().min(1),
         user_message: z.string(),
         metadata: jsonObjectSchema,
+        adopted_from_run_id: workflowRunIdSchema.optional(),
         // Absent for a worktree lane: the checkout exists only once execution starts.
         working_path: z.string().min(1).optional(),
         user_id: z.string().min(1),
@@ -77,6 +85,7 @@ export const resourceStartIntentSchema = z
       .min(1)
       .refine(notProviderResource.check, notProviderResource.message),
     capacity: resourceSlotCapacitySchema,
+    capacityMode: z.enum(['fixed', 'configured']).optional(),
     hostId: z.string().trim().min(1),
     overlap: z.enum(['skip', 'queue']),
     launch: preparedWorkflowLaunchSchema,
@@ -141,12 +150,14 @@ export const resourceStartBindingIntentSchema = z
     runAsUserId: z.string().min(1),
     resource: z.string().min(1).refine(notProviderResource.check, notProviderResource.message),
     capacity: resourceSlotCapacitySchema,
+    capacityMode: z.enum(['fixed', 'configured']).optional(),
     overlap: z.enum(['skip', 'queue']),
     launch: z
       .object({
         cwd: z.string().min(1),
         workflowName: z.string().min(1),
         inputs: z.record(z.string(), jsonValueSchema),
+        adoptRunId: workflowRunIdSchema.optional(),
         discoveryCwd: z.string().min(1).optional(),
         configSource: z.string().min(1).optional(),
         isolation: z.discriminatedUnion('kind', [
