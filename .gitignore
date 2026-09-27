@@ -30,6 +30,17 @@ pnpm-lock.yaml
 # Environment files
 .env
 .env.local
+.env.*
+!.env.example
+.auth-credentials
+auth-users
+*.key
+*.pem
+*.p12
+*.pfx
+/credentials/
+/.credentials/
+**/.credentials/
 
 # Per-user MCP server configs (may contain secrets/topics)
 .archon/mcp/

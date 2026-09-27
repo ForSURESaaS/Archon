@@ -19,6 +19,15 @@ packages/web/dist
 .env
 .env.*
 !.env.example
+.auth-credentials
+auth-users
+*.key
+*.pem
+*.p12
+*.pfx
+/credentials/
+/.credentials/
+**/.credentials/
 *.log
 
 # IDE / editor
