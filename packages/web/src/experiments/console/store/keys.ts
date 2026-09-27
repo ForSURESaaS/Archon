@@ -17,6 +17,7 @@ export const K = {
     `workflow:${encodeURIComponent(cwd)}:${encodeURIComponent(name)}`,
   worktrees: (projectId: string): string => `worktrees:${projectId}`,
   runs: (scope: Scope): string => `runs:${scopeKey(scope)}`,
+  costs: (projectId: string): string => `costs:${projectId}`,
   run: (id: string): string => `run:${id}`,
   messages: (conversationId: string): string => `messages:${conversationId}`,
   conversations: (projectId: string): string => `conversations:${projectId}`,
