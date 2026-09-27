@@ -432,8 +432,9 @@ async function withExecWorkspace<T>(
  */
 async function disposeExecWorkspace(cwd: string, workspace: string): Promise<void> {
   try {
-    await execFileAsync('git', ['worktree', 'remove', '--force', workspace], { cwd });
-    return;
+    // Two --force flags are required when a disposable worktree contains initialized
+    // or partially initialized submodules.
+    await execFileAsync('git', ['worktree', 'remove', '--force', '--force', workspace], { cwd });
   } catch (error) {
     getLog().warn(
       { workspace, error: error instanceof Error ? error.message : String(error) },
@@ -449,6 +450,23 @@ async function disposeExecWorkspace(cwd: string, workspace: string): Promise<voi
       'fixture_runner.exec_workspace_remove_failed'
     );
   });
+  await execFileAsync('git', ['worktree', 'prune'], { cwd }).catch((error: unknown) => {
+    getLog().warn(
+      { workspace, error: error instanceof Error ? error.message : String(error) },
+      'fixture_runner.exec_workspace_prune_failed'
+    );
+  });
+  try {
+    const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd });
+    if (stdout.split('\n').some(line => line === `worktree ${workspace}`)) {
+      getLog().warn({ workspace }, 'fixture_runner.exec_workspace_registration_remains');
+    }
+  } catch (error) {
+    getLog().warn(
+      { workspace, error: error instanceof Error ? error.message : String(error) },
+      'fixture_runner.exec_workspace_verify_failed'
+    );
+  }
 }
 
 /**

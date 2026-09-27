@@ -1211,8 +1211,12 @@ describe('runFixtures exec-code isolation (#2851)', () => {
       ).toEqual([
         ['worktree', 'add'],
         ['worktree', 'remove'],
+        ['worktree', 'prune'],
+        ['worktree', 'list'],
         ['worktree', 'add'],
         ['worktree', 'remove'],
+        ['worktree', 'prune'],
+        ['worktree', 'list'],
       ]);
     } finally {
       execSpy.mockRestore();
@@ -1466,6 +1470,53 @@ describe('runFixtures exec-code isolation (#2851)', () => {
       entry => entry.startsWith('fixture-exec-') || entry.startsWith('fixture-source-')
     );
     expect(leftBehind).toEqual([]);
+  });
+
+  it('disposes a scratch worktree after a submodule is initialized', async () => {
+    const cwd = callerFrom(guardRepo);
+    const submoduleRepo = makeTempProject('fixture-submodule-source-');
+    await git(submoduleRepo, 'init', '-q');
+    writeFileSync(join(submoduleRepo, 'README.md'), 'submodule\n');
+    await git(submoduleRepo, 'add', 'README.md');
+    await git(
+      submoduleRepo,
+      '-c',
+      'user.name=Archon',
+      '-c',
+      'user.email=archon@example.test',
+      'commit',
+      '-qm',
+      'init'
+    );
+    await git(
+      cwd,
+      '-c',
+      'protocol.file.allow=always',
+      'submodule',
+      'add',
+      '-q',
+      submoduleRepo,
+      'vendor/test'
+    );
+    await git(
+      cwd,
+      '-c',
+      'user.name=Archon',
+      '-c',
+      'user.email=archon@example.test',
+      'commit',
+      '-qam',
+      'add submodule'
+    );
+
+    const report = await runFixtures({
+      workflows: [workflowsOnDisk(cwd, ['test-wf'])[0]],
+      cwd,
+    });
+
+    expect(report.failed).toBe(0);
+    const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd });
+    expect(stdout).not.toContain('fixture-exec-');
   });
 
   it('fails an exec-code fixture in a directory outside any git repository', async () => {
