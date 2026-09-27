@@ -322,6 +322,7 @@ import {
   conversationSchema,
   createConversationBodySchema,
   createConversationResponseSchema,
+  conversationHandoffResponseSchema,
   updateConversationBodySchema,
   successResponseSchema,
   messageListResponseSchema,
@@ -637,6 +638,22 @@ const createConversationRoute = createRoute({
       description: 'Created conversation',
     },
     400: jsonError('Bad request'),
+    500: jsonError('Server error'),
+  },
+});
+
+const handoffConversationRoute = createRoute({
+  method: 'post',
+  path: '/api/conversations/{id}/handoff',
+  tags: ['Conversations'],
+  summary: 'Export a conversation as a durable Markdown handoff',
+  request: { params: conversationIdParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: conversationHandoffResponseSchema } },
+      description: 'Handoff created',
+    },
+    404: jsonError('Not found'),
     500: jsonError('Server error'),
   },
 });
@@ -2824,6 +2841,50 @@ export function registerApiRoutes(
     } catch (error) {
       getLog().error({ err: error }, 'create_conversation_failed');
       return apiError(c, 500, 'Failed to create conversation');
+    }
+  });
+
+  // POST /api/conversations/:id/handoff - Export complete persisted history.
+  registerOpenApiRoute(handoffConversationRoute, async c => {
+    const platformId = c.req.param('id') ?? '';
+    try {
+      const conv = await conversationDb.findConversationByPlatformId(platformId);
+      if (!conv) {
+        return apiError(c, 404, 'Conversation not found');
+      }
+
+      // Use the DB directly rather than the browser's capped history response so
+      // a handoff never silently drops messages from a long conversation.
+      const messages = await messageDb.listMessages(conv.id, 1_000_000);
+      const safeId = platformId.replace(/[^\w-]/g, '_');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const handoffDir = join(getArchonHome(), 'handoffs');
+      const filePath = join(handoffDir, `${timestamp}-${safeId}.md`);
+      await mkdir(handoffDir, { recursive: true });
+
+      const title = conv.title?.trim() || 'Untitled conversation';
+      const sections = messages.map(message => {
+        const role =
+          message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'User' : 'System';
+        const createdAt = new Date(message.created_at).toISOString();
+        return `## ${role} · ${createdAt}\n\n${message.content.trim()}`;
+      });
+      const markdown = [
+        `# Chat handoff: ${title}`,
+        '',
+        `- Conversation: \`${platformId}\``,
+        `- Exported: ${new Date().toISOString()}`,
+        `- Messages: ${messages.length.toString()}`,
+        '',
+        ...sections,
+        '',
+      ].join('\n');
+      await writeFile(filePath, markdown, 'utf-8');
+
+      return c.json({ path: filePath, messageCount: messages.length });
+    } catch (error) {
+      getLog().error({ err: error, platformId }, 'conversation_handoff_failed');
+      return apiError(c, 500, 'Failed to create conversation handoff');
     }
   });
 

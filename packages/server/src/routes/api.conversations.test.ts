@@ -1,6 +1,8 @@
 import { describe, test, expect, mock } from 'bun:test';
+import { readFile } from 'fs/promises';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import type { ConversationLockManager } from '@archon/core';
+import { removeTempTree } from '@archon/paths/test-utils';
 import type { WebAdapter } from '../adapters/web';
 import { validationErrorHook } from './openapi-defaults';
 import { mockAllWorkflowModules } from '../test/workflow-mock-factories';
@@ -46,6 +48,7 @@ mock.module('@archon/core', () => ({
   generateAndSetTitle: mockGenerateAndSetTitle,
   resolveTitleRequest: mockResolveTitleRequest,
   getArchonWorkspacesPath: () => '/tmp/.archon/workspaces',
+  getArchonHome: () => '/tmp/.archon-conversation-handoff-test',
   createLogger: () => ({
     fatal: mock(() => undefined),
     error: mock(() => undefined),
@@ -87,8 +90,27 @@ mock.module('@archon/core/db/workflow-events', () => ({}));
 const mockAddMessage = mock(async (_convId: string, _role: string, _content: string) => ({
   id: 'msg-uuid-1',
 }));
+const mockListMessages = mock(async (_convId: string, _limit: number) => [
+  {
+    id: 'msg-user',
+    conversation_id: 'internal-uuid-123',
+    role: 'user',
+    content: 'Please preserve this decision.',
+    metadata: '{}',
+    created_at: new Date('2026-09-26T08:00:00.000Z'),
+  },
+  {
+    id: 'msg-assistant',
+    conversation_id: 'internal-uuid-123',
+    role: 'assistant',
+    content: 'Decision preserved.',
+    metadata: '{}',
+    created_at: new Date('2026-09-26T08:01:00.000Z'),
+  },
+]);
 mock.module('@archon/core/db/messages', () => ({
   addMessage: mockAddMessage,
+  listMessages: mockListMessages,
 }));
 mock.module('@archon/core/db/codebases', () => ({
   listCodebases: mock(async () => [{ default_cwd: '/tmp/project' }]),
@@ -107,6 +129,51 @@ const MOCK_CONV = {
   deleted_at: null,
   codebase_id: null,
 };
+
+describe('POST /api/conversations/:id/handoff', () => {
+  test('writes the complete persisted conversation as Markdown', async () => {
+    mockFindConversationByPlatformId.mockImplementationOnce(async () => ({
+      ...MOCK_CONV,
+      title: 'Migration chat',
+    }));
+
+    const originalArchonHome = process.env.ARCHON_HOME;
+    process.env.ARCHON_HOME = '/tmp/.archon-conversation-handoff-test';
+    try {
+      const app = new OpenAPIHono();
+      registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+
+      const response = await app.request('/api/conversations/web-test-abc/handoff', {
+        method: 'POST',
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { path: string; messageCount: number };
+      expect(body.messageCount).toBe(2);
+      expect(body.path).toStartWith('/tmp/.archon-conversation-handoff-test/handoffs/');
+      const markdown = await readFile(body.path, 'utf-8');
+      expect(markdown).toContain('# Chat handoff: Migration chat');
+      expect(markdown).toContain('## User · 2026-09-26T08:00:00.000Z');
+      expect(markdown).toContain('Please preserve this decision.');
+      expect(markdown).toContain('## Assistant · 2026-09-26T08:01:00.000Z');
+      expect(mockListMessages).toHaveBeenCalledWith('internal-uuid-123', 1_000_000);
+    } finally {
+      if (originalArchonHome === undefined) delete process.env.ARCHON_HOME;
+      else process.env.ARCHON_HOME = originalArchonHome;
+      await removeTempTree('/tmp/.archon-conversation-handoff-test');
+    }
+  });
+
+  test('returns 404 when the conversation does not exist', async () => {
+    mockFindConversationByPlatformId.mockImplementationOnce(async () => null);
+    const app = new OpenAPIHono();
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+
+    const response = await app.request('/api/conversations/web-missing/handoff', {
+      method: 'POST',
+    });
+    expect(response.status).toBe(404);
+  });
+});
 
 describe('GET /api/conversations/:id', () => {
   test('returns conversation JSON by platform conversation ID', async () => {
