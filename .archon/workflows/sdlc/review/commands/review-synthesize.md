@@ -89,8 +89,8 @@ If the verdict requires `replan`, the consolidated artifacts must contain its pr
 Set `action` from that verdict and the accepted contract:
 
 - `none` exactly when `ready: true`;
-- `correct` when every open blocker can be corrected inside the accepted contract;
-- `replan` when a proved blocker is necessary to the requested outcome but its correction would cross an explicit boundary or materially redefine the work.
+- `correct` when every open blocker can be corrected by changing this branch inside the accepted contract. Missing credentials, inaccessible external evidence, unavailable services, and required operator input are not code corrections: record them as evidence/attention limitations, never feed the same unchanged external blocker into the correction loop.
+- `replan` when a proved blocker is necessary to the requested outcome but its correction would cross an explicit boundary, materially redefine the work, or requires external/operator action that this branch cannot perform.
 
 Never emit `ready:true` with `correct` or `replan`, or `ready:false` with `none`.
 
