@@ -26,6 +26,11 @@ interface CreateConversationResponse {
   id: string;
 }
 
+interface ConversationHandoffResponse {
+  path: string;
+  messageCount: number;
+}
+
 export async function createConversation(
   projectId: string,
   message?: string
@@ -43,6 +48,15 @@ export async function listConversations(projectId: string): Promise<Conversation
     `/api/conversations?codebaseId=${encodeURIComponent(projectId)}&mine=true`
   );
   return raw.map(toConversationSummary);
+}
+
+export async function createConversationHandoff(
+  conversationPlatformId: string
+): Promise<ConversationHandoffResponse> {
+  return requestJson<ConversationHandoffResponse>(
+    `/api/conversations/${encodeURIComponent(conversationPlatformId)}/handoff`,
+    { method: 'POST' }
+  );
 }
 
 export async function sendMessage(

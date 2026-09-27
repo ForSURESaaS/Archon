@@ -1009,6 +1009,62 @@ export interface paths {
     };
     trace?: never;
   };
+  '/api/conversations/{id}/handoff': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Export a conversation as a durable Markdown handoff */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Handoff created */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['ConversationHandoffResponse'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/conversations/{id}/messages': {
     parameters: {
       query?: never;
@@ -3759,6 +3815,10 @@ export interface components {
     CreateConversationBody: {
       codebaseId?: string;
       message?: string;
+    };
+    ConversationHandoffResponse: {
+      path: string;
+      messageCount: number;
     };
     SuccessResponse: {
       success: boolean;

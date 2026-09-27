@@ -51,6 +51,14 @@ export const createConversationResponseSchema = z
   })
   .openapi('CreateConversationResponse');
 
+/** POST /api/conversations/:id/handoff response. */
+export const conversationHandoffResponseSchema = z
+  .object({
+    path: z.string(),
+    messageCount: z.number().int().nonnegative(),
+  })
+  .openapi('ConversationHandoffResponse');
+
 /** PATCH /api/conversations/:id request body. */
 export const updateConversationBodySchema = z
   .object({ title: z.string().min(1).optional() })

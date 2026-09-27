@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from 'react';
 import { useParams } from 'react-router';
+import { FileOutput, MessageSquarePlus, Rows3 } from 'lucide-react';
 import { ChatStream } from '../components/ChatStream';
 import { ChatComposer } from '../components/ChatComposer';
 import { ProjectViewTabs } from '../components/ProjectViewTabs';
@@ -28,13 +37,10 @@ const MAX_WAIT_MS = 300_000;
 // Distance from the bottom (px) within which we treat the scroll as "at bottom"
 // — drives both auto-scroll stickiness and the jump-to-bottom button's visibility.
 const NEAR_BOTTOM_PX = 120;
+const COMPACT_MESSAGE_COUNT = 12;
 
 /**
  * Project-scoped agent chat. A tab peer of the runs view under a project.
- *
- * MVP conversation model: one active conversation per project — the most-recent
- * web conversation, or created lazily on first send. No multi-conversation
- * sidebar yet (spike decision #3, deferred).
  *
  * Data flow mirrors RunDetailPage: load messages via useEntity(K.messages),
  * keep live via useConversationSSE (invalidate → refetch), render with the
@@ -53,13 +59,14 @@ export function ChatPage(): ReactElement {
     () => (projectId !== undefined ? skill.listConversations(projectId) : Promise.resolve([]))
   );
 
-  // Active conversation: most-recent web conversation, else null until first send.
+  // Active conversation defaults to the most recent web chat, but remains user-selectable.
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  const [newChatDraft, setNewChatDraft] = useState(false);
   useEffect(() => {
-    if (activeConvId !== null) return;
+    if (activeConvId !== null || newChatDraft) return;
     const web = (conversations ?? []).find(c => c.platformType === 'web');
     if (web !== undefined) setActiveConvId(web.id);
-  }, [conversations, activeConvId]);
+  }, [conversations, activeConvId, newChatDraft]);
 
   const { data: messages, error: messagesError } = useEntity<Message[]>(
     activeConvId !== null ? K.messages(activeConvId) : 'noop:no-conv',
@@ -75,6 +82,11 @@ export function ChatPage(): ReactElement {
   // Non-error advisory (distinct channel from `error` so it doesn't read as a
   // send failure) — e.g. files dropped from a first message.
   const [notice, setNotice] = useState<string | null>(null);
+  const [creatingChat, setCreatingChat] = useState(false);
+  const [compactView, setCompactView] = useState(true);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const lastBottomRef = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
 
   // Turn-completion state. The settle timer (below) is the correctness floor — it
   // works even when SSE is absent. The SSE lock event is a fast-path on top of it.
@@ -151,6 +163,45 @@ export function ChatPage(): ReactElement {
   // Reveal the raw tool trace inline (toggled from the working indicator).
   const [showTools, setShowTools] = useState(false);
 
+  const startNewChat = useCallback((): void => {
+    setNewChatDraft(true);
+    setActiveConvId(null);
+    setBusy(false);
+    setError(null);
+    setNotice('New chat ready. It will be created when you send the first message.');
+    lastBottomRef.current = true;
+    setAtBottom(true);
+  }, []);
+
+  const handoffToNewChat = useCallback((): void => {
+    if (projectId === undefined || activeConvId === null || busy || creatingChat) return;
+    setCreatingChat(true);
+    setError(null);
+    setNotice(null);
+    void (async (): Promise<void> => {
+      try {
+        const handoff = await skill.createConversationHandoff(activeConvId);
+        const firstMessage = [
+          `Continue from the previous chat handoff at ${handoff.path}.`,
+          'Read it first, preserve its decisions and unfinished work, then briefly confirm the current objective and next action.',
+        ].join(' ');
+        const conv = await skill.createConversation(projectId, firstMessage);
+        setNewChatDraft(false);
+        setActiveConvId(conv.conversationId);
+        invalidate(K.conversations(projectId));
+        invalidate(K.messages(conv.conversationId));
+        setBusy(true);
+        setNotice(
+          `Saved ${handoff.messageCount.toString()} messages to ${handoff.path} and opened a new chat.`
+        );
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : 'Failed to create handoff.');
+      } finally {
+        setCreatingChat(false);
+      }
+    })();
+  }, [activeConvId, busy, creatingChat, projectId]);
+
   const onSend = (text: string, files?: File[]): void => {
     if (projectId === undefined) return;
     setError(null);
@@ -160,6 +211,7 @@ export function ChatPage(): ReactElement {
       try {
         if (activeConvId === null) {
           const conv = await skill.createConversation(projectId, text);
+          setNewChatDraft(false);
           setActiveConvId(conv.conversationId);
           invalidate(K.conversations(projectId));
           invalidate(K.messages(conv.conversationId));
@@ -184,24 +236,30 @@ export function ChatPage(): ReactElement {
     })();
   };
 
-  // Inline auto-scroll: stick to bottom on new messages if already near it.
-  // Mirrors RunDetailPage's variant.
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const lastBottomRef = useRef(true);
-  useEffect(() => {
+  // Follow intent belongs to the user. Opening/switching a chat starts pinned;
+  // scrolling upward disables follow until the user returns to the bottom.
+  useLayoutEffect(() => {
+    lastBottomRef.current = true;
+    setAtBottom(true);
     const el = scrollRef.current;
-    if (el === null) return;
-    lastBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
-  });
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el === null || !lastBottomRef.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages?.length]);
+    if (el !== null) el.scrollTop = el.scrollHeight;
+  }, [activeConvId, compactView]);
 
-  // Jump-to-bottom affordance: `atBottom` (state) drives the button's visibility;
-  // `lastBottomRef` (above) drives the auto-scroll stickiness. Keep them in sync.
-  const [atBottom, setAtBottom] = useState(true);
+  const contentRef = useCallback((node: HTMLDivElement | null): (() => void) | undefined => {
+    if (node === null) return undefined;
+    const scrollToTail = (): void => {
+      if (!lastBottomRef.current) return;
+      const el = scrollRef.current;
+      if (el !== null) el.scrollTop = el.scrollHeight;
+    };
+    scrollToTail();
+    const observer = new ResizeObserver(scrollToTail);
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
   const handleScroll = useCallback((): void => {
     const el = scrollRef.current;
     if (el === null) return;
@@ -212,6 +270,7 @@ export function ChatPage(): ReactElement {
   const scrollToBottom = useCallback((): void => {
     const el = scrollRef.current;
     if (el === null) return;
+    lastBottomRef.current = true;
     el.scrollTop = el.scrollHeight;
     setAtBottom(true);
   }, []);
@@ -221,6 +280,11 @@ export function ChatPage(): ReactElement {
   }
 
   const messageList = messages ?? [];
+  const hiddenMessageCount = compactView
+    ? Math.max(0, messageList.length - COMPACT_MESSAGE_COUNT)
+    : 0;
+  const displayedMessages =
+    hiddenMessageCount > 0 ? messageList.slice(hiddenMessageCount) : messageList;
 
   // Surface a failed (re)load of the conversation list or message history — a
   // revalidation can fail silently (network blip, server restart) and otherwise
@@ -244,12 +308,73 @@ export function ChatPage(): ReactElement {
   return (
     <section className="flex h-full flex-col">
       <header className="flex flex-col gap-3 border-b border-border px-6 py-4">
-        <div className="flex items-baseline justify-between gap-4">
+        <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="truncate text-base font-medium text-text-primary">
               {project?.name ?? 'Project'}
             </h1>
             <p className="text-xs text-text-tertiary">{project?.path ?? 'Loading…'}</p>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <label className="sr-only" htmlFor="conversation-select">
+              Conversation
+            </label>
+            <select
+              id="conversation-select"
+              value={activeConvId ?? ''}
+              onChange={event => {
+                setNewChatDraft(event.target.value === '');
+                setActiveConvId(event.target.value || null);
+                setError(null);
+                setNotice(null);
+              }}
+              disabled={busy || creatingChat}
+              className="max-w-[260px] rounded-md border border-border bg-surface-elevated px-2 py-1.5 text-xs text-text-primary disabled:opacity-50"
+            >
+              {activeConvId === null ? <option value="">New unsaved chat</option> : null}
+              {(conversations ?? [])
+                .filter(conversation => conversation.platformType === 'web')
+                .map(conversation => (
+                  <option key={conversation.id} value={conversation.id}>
+                    {conversation.title?.trim() || 'Untitled conversation'}
+                  </option>
+                ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => {
+                setCompactView(value => !value);
+              }}
+              aria-pressed={compactView}
+              title="Keep the complete thread stored, but show only recent messages"
+              className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
+                compactView
+                  ? 'border-brand-magenta/50 bg-brand-magenta/10 text-text-primary'
+                  : 'border-border text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              <Rows3 className="h-3.5 w-3.5" />
+              Compact
+            </button>
+            <button
+              type="button"
+              onClick={handoffToNewChat}
+              disabled={activeConvId === null || busy || creatingChat}
+              title="Export the complete chat to Markdown and continue in a fresh chat"
+              className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
+            >
+              <FileOutput className="h-3.5 w-3.5" />
+              {creatingChat ? 'Creating handoff…' : 'Handoff'}
+            </button>
+            <button
+              type="button"
+              onClick={startNewChat}
+              disabled={busy || creatingChat}
+              className="brand-bar flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+            >
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              New chat
+            </button>
           </div>
         </div>
         <ProjectViewTabs projectId={projectId} active="chat" />
@@ -262,7 +387,24 @@ export function ChatPage(): ReactElement {
           className="h-full overflow-y-auto px-[30px] pt-[26px] pb-[18px]"
         >
           {/* Match the composer's centered 940px column (design: .stream-inner) */}
-          <div className="mx-auto max-w-[940px]">
+          <div ref={contentRef} className="mx-auto max-w-[940px]">
+            {hiddenMessageCount > 0 ? (
+              <div className="mb-4 flex items-center justify-between rounded-lg border border-border bg-surface-elevated px-3 py-2 text-xs text-text-secondary">
+                <span>
+                  {hiddenMessageCount.toString()} earlier messages are compacted from this view. The
+                  complete thread is still stored.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCompactView(false);
+                  }}
+                  className="ml-3 shrink-0 text-text-primary underline underline-offset-2"
+                >
+                  Show all
+                </button>
+              </div>
+            ) : null}
             {messageList.length === 0 && !busy ? (
               <EmptyState
                 title="No messages yet."
@@ -270,7 +412,7 @@ export function ChatPage(): ReactElement {
               />
             ) : (
               <StreamContextProvider value={{ runStartedAt: null }}>
-                <ChatStream messages={messageList} showTools={showTools} />
+                <ChatStream messages={displayedMessages} showTools={showTools} />
                 {busy ? (
                   <WorkingIndicator
                     activity={currentActivity}
