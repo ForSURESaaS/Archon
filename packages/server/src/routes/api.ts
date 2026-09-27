@@ -113,6 +113,7 @@ import type { MessageRow } from '@archon/core/schemas/message';
 import type { DashboardWorkflowRun } from '@archon/core/schemas/workflow-run';
 import { findCommandFiles } from '@archon/core/utils/commands';
 import { resumeWorkflowRunFromServer } from '../services/workflow-resume-service';
+import { classifyWorkflowLiveness } from '../services/workflow-liveness';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -1596,6 +1597,7 @@ const getHealthRoute = createRoute({
               adapter: z.string(),
               concurrency: z.record(z.string(), z.unknown()),
               runningWorkflows: z.number(),
+              staleRunningWorkflows: z.number(),
               version: z.string().optional(),
               is_docker: z.boolean(),
               is_wsl: z.boolean(),
@@ -5206,11 +5208,15 @@ export function registerApiRoutes(
   registerOpenApiRoute(getHealthRoute, async c => {
     const stats = lockManager.getStats();
     const runningWorkflowRows = await workflowDb.getRunningWorkflows();
+    const workflowLiveness = await classifyWorkflowLiveness(runningWorkflowRows);
+    const liveWorkflowRows = workflowLiveness.live;
 
-    // Merge lock-based and DB-based active tracking.
+    // Merge lock-based and live-owner-based active tracking. A persisted `running`
+    // row survives process/container crashes and is resumable, but it is not proof
+    // that work is executing. The per-run owner handshake is.
     // Background workflows bypass the lock manager, so we combine both sources.
     const lockActiveSet = new Set(stats.activeConversationIds);
-    const backgroundConversationIds = runningWorkflowRows
+    const backgroundConversationIds = liveWorkflowRows
       .map(r => r.conversation_id)
       .filter(id => !lockActiveSet.has(id));
     const allActiveIds = [...stats.activeConversationIds, ...backgroundConversationIds];
@@ -5244,7 +5250,8 @@ export function registerApiRoutes(
         active: allActiveIds.length,
         activeConversationIds: allActiveIds,
       },
-      runningWorkflows: runningWorkflowRows.length,
+      runningWorkflows: liveWorkflowRows.length,
+      staleRunningWorkflows: workflowLiveness.stale.length,
       version: appVersion,
       is_docker: isDocker(),
       is_wsl: isWSL(),

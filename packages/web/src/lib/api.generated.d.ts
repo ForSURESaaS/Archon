@@ -5267,6 +5267,7 @@ export interface components {
         [key: string]: unknown;
       };
       runningWorkflows: number;
+      staleRunningWorkflows: number;
       version?: string;
       is_docker: boolean;
       is_wsl: boolean;
