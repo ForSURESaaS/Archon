@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react';
 import { useNavigate } from 'react-router';
 import { OriginBadge } from './OriginBadge';
-import { runDetailPath, type Run } from '../primitives/run';
+import { runDetailPath, runDisplayText, type Run } from '../primitives/run';
 import { shortRunId, formatElapsed, elapsedSince, formatCost } from '../lib/format';
 import { useIsDocker, useIdeEnv, openInIde } from '../lib/health';
 import { statusTextClass } from '../lib/run-status';
@@ -44,6 +44,7 @@ export function RecentRunRow({
     !run.id.startsWith('demo-') &&
     (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled');
   const glyph = STATUS_GLYPH[run.status] ?? '·';
+  const displayText = runDisplayText(run);
 
   const onClick = (): void => {
     if (canOpen) navigate(runDetailPath(run));
@@ -124,14 +125,9 @@ export function RecentRunRow({
             ↳ child
           </span>
         ) : null}
-        {run.userMessage !== '' ? (
-          <span
-            className="min-w-0 truncate text-[12.5px] text-text-tertiary"
-            title={run.userMessage}
-          >
-            {run.userMessage}
-          </span>
-        ) : null}
+        <span className="min-w-0 truncate text-[12.5px] text-text-tertiary" title={displayText}>
+          {displayText}
+        </span>
       </span>
 
       {showProject ? (

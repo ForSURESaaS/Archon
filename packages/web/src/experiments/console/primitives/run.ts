@@ -24,6 +24,10 @@ export interface Run {
   /** Total USD cost from the agent SDK. Populated for completed Claude runs;
    *  Pi/Codex runs may not report cost. Null when the run hasn't recorded any. */
   costUsd: number | null;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
   /** DB id of the conversation this run belongs to. */
   conversationId: string | null;
   /**
@@ -91,6 +95,11 @@ export interface Run {
    * affordance in the console so a sub-run isn't mistaken for an orphan top-level run.
    */
   parentRunId?: string | null;
+}
+
+export function runDisplayText(run: Pick<Run, 'userMessage' | 'workflow'>): string {
+  const message = run.userMessage.trim();
+  return message || `${run.workflow} workflow run`;
 }
 
 export function runDetailPath(run: Pick<Run, 'id' | 'projectId'>): string {
@@ -179,6 +188,25 @@ function readCost(meta: WorkflowRunMetadata | undefined): number | null {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null;
 }
 
+function readUsage(meta: WorkflowRunMetadata | undefined, key: string): number | null {
+  if (meta === undefined) return null;
+  const value = meta[key];
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function readUserMessage(raw: RawWorkflowRun): string {
+  const direct = raw.user_message?.trim();
+  if (direct) return direct;
+  const inputs = raw.metadata?.inputs;
+  if (typeof inputs !== 'object' || inputs === null) return '';
+  const values = inputs as Record<string, unknown>;
+  for (const key of ['work', 'message', 'prompt', 'task', 'request']) {
+    const value = values[key];
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  }
+  return '';
+}
+
 /**
  * The platform conversation id that holds this run's messages — the id the
  * `/api/conversations/:id/messages` route accepts. CLI runs expose it as
@@ -257,7 +285,11 @@ export function toRun(raw: RawWorkflowRun): Run {
     startedAt: raw.started_at,
     finishedAt: raw.completed_at ?? null,
     workingPath: raw.working_path ?? null,
-    userMessage: raw.user_message ?? '',
+    userMessage: readUserMessage(raw),
+    tokensIn: readUsage(raw.metadata, 'total_tokens_in'),
+    tokensOut: readUsage(raw.metadata, 'total_tokens_out'),
+    cacheReadTokens: readUsage(raw.metadata, 'total_cache_read_tokens'),
+    cacheWriteTokens: readUsage(raw.metadata, 'total_cache_write_tokens'),
     activeNodes,
     currentNode: activeNodes.length === 1 ? (activeNodes[0] ?? null) : null,
     lastTool: null,

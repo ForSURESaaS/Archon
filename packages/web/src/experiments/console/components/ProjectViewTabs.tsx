@@ -3,16 +3,21 @@ import { Link } from 'react-router';
 
 interface ProjectViewTabsProps {
   projectId: string;
-  active: 'runs' | 'chat';
+  active: 'runs' | 'chat' | 'costs';
 }
 
-const TABS: readonly { key: 'runs' | 'chat'; label: string; suffix: string }[] = [
+const TABS: readonly {
+  key: 'runs' | 'chat' | 'costs';
+  label: string;
+  suffix: string;
+}[] = [
   { key: 'runs', label: 'Runs', suffix: '' },
   { key: 'chat', label: 'Chat', suffix: '/chat' },
+  { key: 'costs', label: 'Costs', suffix: '/costs' },
 ];
 
 /**
- * Runs | Chat tab control under a project. Active styling mirrors FilterChips
+ * Runs | Chat | Costs tab control under a project. Active styling mirrors FilterChips
  * (brand-bar underline). Only meaningful when a project is scoped — chat is
  * project-scoped, so this is never rendered on the All-projects view.
  */

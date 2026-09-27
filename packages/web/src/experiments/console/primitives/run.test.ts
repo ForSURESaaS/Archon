@@ -1,5 +1,11 @@
 import { describe, test, expect } from 'bun:test';
-import { toRun, normalizeOrigin, runDetailPath, runMessageConversationId } from './run';
+import {
+  toRun,
+  normalizeOrigin,
+  runDetailPath,
+  runDisplayText,
+  runMessageConversationId,
+} from './run';
 import { runStatusLabel } from '../lib/run-status';
 
 type Raw = Parameters<typeof toRun>[0];
@@ -11,6 +17,20 @@ function raw(over: Partial<Raw> & { id: string; workflow_name: string; status: s
     ...over,
   };
 }
+
+describe('runDisplayText', () => {
+  test('uses the authored request when available', () => {
+    expect(runDisplayText({ workflow: 'deliver', userMessage: 'Fix the dropdown' })).toBe(
+      'Fix the dropdown'
+    );
+  });
+
+  test('provides a useful fallback for system-created runs', () => {
+    expect(runDisplayText({ workflow: 'archon-deliver', userMessage: '' })).toBe(
+      'archon-deliver workflow run'
+    );
+  });
+});
 
 describe('normalizeOrigin', () => {
   test('maps each known platform_type to its RunOrigin', () => {
@@ -130,6 +150,18 @@ describe('toRun — provenance', () => {
     expect(r.userMessage).toBe('summarise PRs');
   });
 
+  test('userMessage falls back to persisted workflow inputs for automated runs', () => {
+    const r = toRun(
+      raw({
+        id: 'r1',
+        workflow_name: 'archon-deliver',
+        status: 'running',
+        metadata: { inputs: { work: 'Continue issue APP-123' } },
+      })
+    );
+    expect(r.userMessage).toBe('Continue issue APP-123');
+  });
+
   test('origin is derived from platform_type', () => {
     const r = toRun(
       raw({ id: 'r1', workflow_name: 'plan', status: 'running', platform_type: 'web' })
@@ -236,6 +268,26 @@ describe('toRun — cost', () => {
       })
     );
     expect(r.costUsd).toBe(1.5);
+  });
+
+  test('reads persisted token telemetry from metadata', () => {
+    const r = toRun(
+      raw({
+        id: 'r1',
+        workflow_name: 'plan',
+        status: 'completed',
+        metadata: {
+          total_tokens_in: 1200,
+          total_tokens_out: 300,
+          total_cache_read_tokens: 800,
+          total_cache_write_tokens: 40,
+        },
+      })
+    );
+    expect(r.tokensIn).toBe(1200);
+    expect(r.tokensOut).toBe(300);
+    expect(r.cacheReadTokens).toBe(800);
+    expect(r.cacheWriteTokens).toBe(40);
   });
 
   test('treats $0.00 (and non-positive) as null — the > 0 guard', () => {

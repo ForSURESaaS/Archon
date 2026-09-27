@@ -7,7 +7,9 @@ import type { components } from '@/lib/api.generated';
 export interface ListRunsOptions {
   codebaseId?: string;
   status?: RunStatus;
+  after?: string;
   limit?: number;
+  offset?: number;
 }
 
 export interface RunCounts {
@@ -44,7 +46,9 @@ export async function listRuns(
   const qs = new URLSearchParams();
   if (opts.codebaseId !== undefined) qs.set('codebaseId', opts.codebaseId);
   if (opts.status !== undefined) qs.set('status', opts.status);
+  if (opts.after !== undefined) qs.set('after', opts.after);
   if (opts.limit !== undefined) qs.set('limit', opts.limit.toString());
+  if (opts.offset !== undefined) qs.set('offset', opts.offset.toString());
   const url = `/api/dashboard/runs${qs.size > 0 ? `?${qs.toString()}` : ''}`;
   const res = await requestJson<DashboardRunsResponse>(url);
   return {
@@ -52,6 +56,16 @@ export async function listRuns(
     counts: normalizeCounts(res.counts),
     total: res.total,
   };
+}
+
+export async function listCostRuns(codebaseId: string, after?: string): Promise<Run[]> {
+  const pageSize = 200;
+  const runs: Run[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await listRuns({ codebaseId, after, limit: pageSize, offset });
+    runs.push(...page.runs);
+    if (runs.length >= page.total || page.runs.length < pageSize) return runs;
+  }
 }
 
 export async function listGlobalCounts(): Promise<RunCounts> {
