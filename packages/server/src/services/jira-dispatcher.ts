@@ -3,6 +3,7 @@ import { spawn } from 'bun';
 import { access, mkdir, writeFile } from 'fs/promises';
 import { basename, join } from 'path';
 import { createLogger, getArchonHome } from '@archon/paths';
+import { execFileAsync, fetchWithRefLockRetry, toRepoPath } from '@archon/git';
 import * as codebaseDb from '@archon/core/db/codebases';
 import * as jiraQueueDb from '@archon/core/db/jira-queue';
 import * as userDb from '@archon/core/db/users';
@@ -164,6 +165,64 @@ function branchFor(pattern: string, issueKey: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function refreshFailedClaimCheckout(
+  failedClaim: jiraQueueDb.JiraJobRecord,
+  repoPath: string,
+  baseBranch: string,
+  branchName: string
+): Promise<void> {
+  if (!failedClaim.workflowRunId) return;
+  const priorRun = await workflowDb.getWorkflowRun(failedClaim.workflowRunId);
+  if (!priorRun?.working_path) return;
+
+  const workingPath = priorRun.working_path;
+  const { stdout: branch } = await execFileAsync(
+    'git',
+    ['-C', workingPath, 'branch', '--show-current'],
+    { timeout: 10_000 }
+  );
+  if (branch.trim() !== branchName) {
+    throw new Error(
+      `Cannot refresh failed ticket branch '${branchName}': its worktree is on '${branch.trim()}'.`
+    );
+  }
+  const { stdout: status } = await execFileAsync(
+    'git',
+    ['-C', workingPath, 'status', '--porcelain'],
+    { timeout: 10_000 }
+  );
+  if (status.trim() !== '') {
+    throw new Error(
+      `Cannot refresh failed ticket branch '${branchName}' because it contains uncommitted work.`
+    );
+  }
+
+  await fetchWithRefLockRetry(toRepoPath(repoPath), 'origin', baseBranch, {
+    timeoutMs: 60_000,
+  });
+  const { stdout: uniqueCommits } = await execFileAsync(
+    'git',
+    ['-C', repoPath, 'rev-list', '--count', branchName, '--not', `origin/${baseBranch}`],
+    { timeout: 10_000 }
+  );
+  if (uniqueCommits.trim() !== '0') {
+    throw new Error(
+      `Cannot refresh failed ticket branch '${branchName}' because it contains commits not present on origin/${baseBranch}.`
+    );
+  }
+
+  await execFileAsync('git', ['-C', repoPath, 'worktree', 'remove', workingPath], {
+    timeout: 60_000,
+  });
+  await execFileAsync('git', ['-C', repoPath, 'branch', '-D', branchName], {
+    timeout: 10_000,
+  });
+  log.info(
+    { issueKey: failedClaim.issueKey, branchName, workingPath, baseBranch },
+    'jira.failed_claim_stale_checkout_removed'
+  );
 }
 
 async function transitionIssueThrough(
@@ -534,6 +593,14 @@ export class JiraDispatcher {
       await jiraQueueDb.upsertJiraConfig(codebaseId, record.config, record.enabled, userId);
       const codebase = await codebaseDb.getCodebase(codebaseId);
       if (!codebase) throw new Error('Archon project no longer exists.');
+      if (retryingFailedClaim && failedClaim) {
+        await refreshFailedClaimCheckout(
+          failedClaim,
+          codebase.default_cwd,
+          record.config.branches.base,
+          branchName
+        );
+      }
       const receiptId = randomUUID();
       const digest = createHash('sha256').update(issue.sourceRevision).digest('hex');
       const accepted = await acceptStartReceipt({
