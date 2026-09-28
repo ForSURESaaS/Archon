@@ -596,7 +596,7 @@ export class JiraDispatcher {
       await jiraQueueDb.upsertJiraConfig(codebaseId, record.config, record.enabled, userId);
       const codebase = await codebaseDb.getCodebase(codebaseId);
       if (!codebase) throw new Error('Archon project no longer exists.');
-      if (retryingFailedClaim && failedClaim) {
+      if (failedClaim) {
         await refreshFailedClaimCheckout(
           failedClaim,
           codebase.default_cwd,
