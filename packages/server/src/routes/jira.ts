@@ -4,6 +4,7 @@ import * as workflowDb from '@archon/core/db/workflows';
 import * as workflowEventDb from '@archon/core/db/workflow-events';
 import * as userDb from '@archon/core/db/users';
 import { spawn } from 'bun';
+import { resolve, sep } from 'node:path';
 import type { JiraDispatcher } from '../services/jira-dispatcher';
 import {
   assertAllowedJiraBaseUrl,
@@ -158,15 +159,18 @@ function terminalNodeIds(events: Awaited<ReturnType<typeof workflowEventDb.listW
   return { completed, active, durationMs };
 }
 
-async function readRunChanges(
-  workingPath: string | null,
-  baseline: unknown
-): Promise<{ files: number; additions: number; deletions: number } | null> {
-  if (!workingPath || baseline === null || typeof baseline !== 'object') return null;
-  const base = baseline as { kind?: unknown; commit?: unknown };
-  if (base.kind !== 'git' || typeof base.commit !== 'string') return null;
+interface RunChanges {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
+async function runGit(
+  workingPath: string,
+  args: string[]
+): Promise<{ exitCode: number; stdout: string }> {
   const child = spawn({
-    cmd: ['git', '-C', workingPath, 'diff', '--numstat', `${base.commit}...HEAD`],
+    cmd: ['git', '-C', workingPath, ...args],
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -175,18 +179,78 @@ async function readRunChanges(
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ]);
-  if (exitCode !== 0) return null;
+  return { exitCode, stdout };
+}
+
+function parseNumstat(stdout: string, excludedPaths: Set<string>): RunChanges {
   let files = 0;
   let additions = 0;
   let deletions = 0;
   for (const line of stdout.trim().split('\n')) {
     if (!line) continue;
-    const [added, deleted] = line.split('\t');
+    const [added, deleted, path] = line.split('\t');
+    // A changed submodule is otherwise reported as +1/-1 for its gitlink.
+    if (path && excludedPaths.has(path)) continue;
     files++;
     if (added !== '-') additions += Number(added) || 0;
     if (deleted !== '-') deletions += Number(deleted) || 0;
   }
   return { files, additions, deletions };
+}
+
+function changedSubmodules(stdout: string): { path: string; before: string; after: string }[] {
+  const changes: { path: string; before: string; after: string }[] = [];
+  for (const line of stdout.trim().split('\n')) {
+    if (!line) continue;
+    const match = /^:160000 160000 ([0-9a-f]{40}) ([0-9a-f]{40}) [A-Z]\t(.+)$/.exec(line);
+    if (match) changes.push({ before: match[1], after: match[2], path: match[3] });
+  }
+  return changes;
+}
+
+async function readGitChanges(
+  workingPath: string,
+  before: string,
+  after: string,
+  depth = 0
+): Promise<RunChanges | null> {
+  const [numstat, raw] = await Promise.all([
+    runGit(workingPath, ['diff', '--numstat', before, after]),
+    runGit(workingPath, ['diff', '--raw', '--no-abbrev', before, after]),
+  ]);
+  if (numstat.exitCode !== 0 || raw.exitCode !== 0) return null;
+
+  const submodules = depth < 8 ? changedSubmodules(raw.stdout) : [];
+  const expandedSubmodules = new Set<string>();
+  const nestedResults: RunChanges[] = [];
+  const root = resolve(workingPath);
+  for (const submodule of submodules) {
+    const nestedPath = resolve(root, submodule.path);
+    if (!nestedPath.startsWith(`${root}${sep}`)) continue;
+    const nested = await readGitChanges(nestedPath, submodule.before, submodule.after, depth + 1);
+    if (!nested) continue;
+    expandedSubmodules.add(submodule.path);
+    nestedResults.push(nested);
+  }
+  const result = parseNumstat(numstat.stdout, expandedSubmodules);
+  for (const nested of nestedResults) {
+    result.files += nested.files;
+    result.additions += nested.additions;
+    result.deletions += nested.deletions;
+  }
+  return result;
+}
+
+async function readRunChanges(
+  workingPath: string | null,
+  baseline: unknown
+): Promise<RunChanges | null> {
+  if (!workingPath || baseline === null || typeof baseline !== 'object') return null;
+  const base = baseline as { kind?: unknown; commit?: unknown };
+  if (base.kind !== 'git' || typeof base.commit !== 'string') return null;
+  const mergeBase = await runGit(workingPath, ['merge-base', base.commit, 'HEAD']);
+  if (mergeBase.exitCode !== 0 || !mergeBase.stdout.trim()) return null;
+  return readGitChanges(workingPath, mergeBase.stdout.trim(), 'HEAD');
 }
 
 async function getRunTelemetry(runId: string): Promise<JiraRunTelemetry | null> {
