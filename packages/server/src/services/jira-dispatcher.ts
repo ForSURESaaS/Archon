@@ -1164,62 +1164,49 @@ export class JiraDispatcher {
           completionPending: true,
           metadata: { ...job.metadata, effectiveRunId, completionEffects: effects },
         });
-        const conflict = await this.detectConflict(job);
-        if (conflict) {
-          await jiraQueueDb.updateJiraJob(job.id, {
-            status: 'conflicted',
-            prUrl: effectivePrUrl,
-            conflictDetail: conflict,
-            completionPending: false,
-            completed: true,
-          });
-          await client.addCommentOnce(
+        // Parallel feature branches are independent delivery outputs. Comparing
+        // a completed branch to every in-flight sibling creates false blockers:
+        // neither branch is the other's merge target, and no merge order exists
+        // yet. Real conflicts are resolved against the PR's base after another
+        // PR lands; they must not keep completed Jira work in IN PROGRESS.
+        let transitionWarning: string | null = null;
+        try {
+          await transitionIssueThrough(
+            client,
             job.issueKey,
-            `[archon:conflicted:${job.id}]`,
-            `Archon completed the run, but promotion is blocked by a branch conflict. ${conflict}${
-              effectivePrUrl ? ` PR: ${effectivePrUrl}` : ''
-            }`
+            config.config.workflow_states.ready_for_manual_test_via ?? [],
+            config.config.workflow_states.ready_for_manual_test
           );
-        } else {
-          let transitionWarning: string | null = null;
-          try {
-            await transitionIssueThrough(
-              client,
-              job.issueKey,
-              config.config.workflow_states.ready_for_manual_test_via ?? [],
-              config.config.workflow_states.ready_for_manual_test
-            );
-            effects.jiraTransition = true;
-          } catch (error) {
-            // Delivery success is terminal even when the Jira workflow has no path
-            // to the configured destination. Persist one actionable warning rather
-            // than retrying and duplicating completion comments every scan.
-            transitionWarning = `Delivery succeeded, but Jira could not move ${job.issueKey} to '${config.config.workflow_states.ready_for_manual_test}': ${errorMessage(error)}`;
-          }
-          await jiraQueueDb.updateJiraJob(job.id, {
-            status: 'succeeded',
-            prUrl: effectivePrUrl,
-            conflictDetail: transitionWarning,
-            metadata: { ...job.metadata, effectiveRunId, completionEffects: effects },
-          });
-          await client.addCommentOnce(
-            job.issueKey,
-            `[archon:completed:${job.id}]`,
-            `Archon delivery completed. Run: ${effectiveRunId}${effectivePrUrl ? ` PR: ${effectivePrUrl}` : ''}${
-              transitionWarning ? ` ${transitionWarning}` : ''
-            }`
-          );
-          effects.jiraComment = true;
-          if (effectivePrUrl) {
-            await upsertPullRequestCostComment(effectivePrUrl, job);
-            effects.costComment = true;
-          }
-          await jiraQueueDb.updateJiraJob(job.id, {
-            metadata: { ...job.metadata, effectiveRunId, completionEffects: effects },
-            completionPending: false,
-            completed: true,
-          });
+          effects.jiraTransition = true;
+        } catch (error) {
+          // Delivery success is terminal even when the Jira workflow has no path
+          // to the configured destination. Persist one actionable warning rather
+          // than retrying and duplicating completion comments every scan.
+          transitionWarning = `Delivery succeeded, but Jira could not move ${job.issueKey} to '${config.config.workflow_states.ready_for_manual_test}': ${errorMessage(error)}`;
         }
+        await jiraQueueDb.updateJiraJob(job.id, {
+          status: 'succeeded',
+          prUrl: effectivePrUrl,
+          conflictDetail: transitionWarning,
+          metadata: { ...job.metadata, effectiveRunId, completionEffects: effects },
+        });
+        await client.addCommentOnce(
+          job.issueKey,
+          `[archon:completed:${job.id}]`,
+          `Archon delivery completed. Run: ${effectiveRunId}${effectivePrUrl ? ` PR: ${effectivePrUrl}` : ''}${
+            transitionWarning ? ` ${transitionWarning}` : ''
+          }`
+        );
+        effects.jiraComment = true;
+        if (effectivePrUrl) {
+          await upsertPullRequestCostComment(effectivePrUrl, job);
+          effects.costComment = true;
+        }
+        await jiraQueueDb.updateJiraJob(job.id, {
+          metadata: { ...job.metadata, effectiveRunId, completionEffects: effects },
+          completionPending: false,
+          completed: true,
+        });
       } else {
         const detail = terminal?.error ?? `Workflow ended with status '${run.status}'.`;
         await client.addCommentOnce(
@@ -1236,44 +1223,5 @@ export class JiraDispatcher {
       await this.resourceHost.requestDrain();
       this.snapshots.delete(job.codebaseId);
     }
-  }
-
-  private async detectConflict(job: jiraQueueDb.JiraJobRecord): Promise<string | null> {
-    if (!job.branchName) return null;
-    const codebase = await codebaseDb.getCodebase(job.codebaseId);
-    if (!codebase) return 'Project no longer exists.';
-    const peers = (await jiraQueueDb.listJiraJobs(job.codebaseId)).filter(
-      candidate =>
-        candidate.id !== job.id &&
-        candidate.branchName &&
-        (candidate.status === 'running' || candidate.status === 'queued')
-    );
-    for (const peer of peers) {
-      const peerBranchName = peer.branchName;
-      if (!peerBranchName) continue;
-      const child = spawn({
-        cmd: [
-          'git',
-          '-C',
-          codebase.default_cwd,
-          'merge-tree',
-          '--write-tree',
-          job.branchName,
-          peerBranchName,
-        ],
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
-      const [exitCode, stderr] = await Promise.all([
-        child.exited,
-        new Response(child.stderr).text(),
-      ]);
-      if (exitCode !== 0) {
-        return `Branch ${job.branchName} conflicts with ${peer.issueKey} (${peer.branchName}): ${
-          stderr.trim() || 'git merge-tree reported a conflict'
-        }`;
-      }
-    }
-    return null;
   }
 }
