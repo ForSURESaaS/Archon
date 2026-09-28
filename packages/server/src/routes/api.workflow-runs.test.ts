@@ -36,6 +36,8 @@ beforeAll(async (): Promise<void> => {
 
 const mockGetWorkflowRun = mock(async (_id: string) => null as null | MockWorkflowRun);
 const mockCancelWorkflowRun = mock(async (_id: string) => ({ cancelled: true }));
+const mockFailWorkflowRun = mock(async (_id: string, _error: string, _options?: unknown) => {});
+const mockIsRunOwnerAnswering = mock(async (_id: string) => false);
 type ListWorkflowRunsOptions = Parameters<
   (typeof import('@archon/core/db/workflows'))['listWorkflowRuns']
 >[0];
@@ -367,12 +369,17 @@ mock.module('@archon/core/db/workflows', () => ({
   getWorkflowRun: mockGetWorkflowRun,
   findChildRuns: mockFindChildRuns,
   cancelWorkflowRun: mockCancelWorkflowRun,
+  failWorkflowRun: mockFailWorkflowRun,
   deleteWorkflowRun: mockDeleteWorkflowRun,
   updateWorkflowRun: mockUpdateWorkflowRun,
   resolveApprovalGate: mockResolveApprovalGate,
   resolveAndCancelApprovalGate: mockResolveAndCancelApprovalGate,
   signalWorkflowWait: mockSignalWorkflowWait,
   getWorkflowRunByWorkerPlatformId: mockGetWorkflowRunByWorkerPlatformId,
+}));
+
+mock.module('@archon/core/services/run-live-owner', () => ({
+  isRunOwnerAnswering: mockIsRunOwnerAnswering,
 }));
 
 const mockCreateWorkflowEvent = mock(async (_event: unknown) => {});
@@ -1854,6 +1861,9 @@ describe('POST /api/workflows/runs/:runId/resume', () => {
     mockResolveRunWorkflow.mockClear();
     mockHydrateResumableRun.mockClear();
     mockExecuteWorkflow.mockClear();
+    mockFailWorkflowRun.mockClear();
+    mockIsRunOwnerAnswering.mockReset();
+    mockIsRunOwnerAnswering.mockResolvedValue(false);
   });
 
   test('returns 404 when run not found', async () => {
@@ -1866,7 +1876,7 @@ describe('POST /api/workflows/runs/:runId/resume', () => {
   });
 
   test('returns 400 when run is not in failed status', async () => {
-    mockGetWorkflowRun.mockResolvedValueOnce(MOCK_RUNNING_RUN);
+    mockGetWorkflowRun.mockResolvedValueOnce({ ...MOCK_RUNNING_RUN, status: 'completed' });
     const { app } = makeApp();
     const response = await app.request('/api/workflows/runs/run-uuid-1/resume', {
       method: 'POST',
@@ -1874,6 +1884,47 @@ describe('POST /api/workflows/runs/:runId/resume', () => {
     expect(response.status).toBe(400);
     const body = (await response.json()) as { error: string };
     expect(body.error).toContain('Cannot resume');
+  });
+
+  test('returns 409 when a running run still has a live execution owner', async () => {
+    mockGetWorkflowRun.mockResolvedValueOnce(MOCK_RUNNING_RUN);
+    mockIsRunOwnerAnswering.mockResolvedValueOnce(true);
+    const { app } = makeApp();
+
+    const response = await app.request('/api/workflows/runs/run-uuid-1/resume', {
+      method: 'POST',
+    });
+
+    expect(response.status).toBe(409);
+    expect(mockFailWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  test('terminalizes and resumes an orphaned running run immediately', async () => {
+    mockGetWorkflowRun
+      .mockResolvedValueOnce({
+        ...MOCK_RUNNING_RUN,
+        parent_conversation_id: null,
+        working_path: '/tmp/worktrees/run-uuid-1',
+      })
+      .mockResolvedValueOnce({
+        ...MOCK_FAILED_RUN,
+        id: 'run-uuid-1',
+        parent_conversation_id: null,
+        working_path: '/tmp/worktrees/run-uuid-1',
+      });
+    const { app } = makeApp();
+
+    const response = await app.request('/api/workflows/runs/run-uuid-1/resume', {
+      method: 'POST',
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockFailWorkflowRun).toHaveBeenCalledWith(
+      'run-uuid-1',
+      expect.stringContaining('Execution owner stopped'),
+      { exitReason: 'not_finalized' }
+    );
+    expect(mockExecuteWorkflow).toHaveBeenCalledTimes(1);
   });
 
   test('resumes headlessly (no dispatch) when run has no parent_conversation_id (#2008)', async () => {

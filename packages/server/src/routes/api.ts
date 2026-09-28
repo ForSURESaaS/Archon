@@ -127,6 +127,7 @@ import type { DashboardWorkflowRun } from '@archon/core/schemas/workflow-run';
 import { findCommandFiles } from '@archon/core/utils/commands';
 import { resumeWorkflowRunFromServer } from '../services/workflow-resume-service';
 import { classifyWorkflowLiveness } from '../services/workflow-liveness';
+import { isRunOwnerAnswering } from '@archon/core/services/run-live-owner';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -3831,9 +3832,25 @@ export function registerApiRoutes(
   registerOpenApiRoute(resumeWorkflowRunRoute, async c => {
     const runId = c.req.param('runId') ?? '';
     try {
-      const run = await workflowDb.getWorkflowRun(runId);
+      let run = await workflowDb.getWorkflowRun(runId);
       if (!run) {
         return apiError(c, 404, 'Workflow run not found');
+      }
+      if (run.status === 'running') {
+        if (await isRunOwnerAnswering(run.id)) {
+          return apiError(c, 409, 'Cannot resume workflow while its execution owner is active');
+        }
+        // A process/container restart can leave the durable row running after its
+        // in-process executor is gone. The owner handshake proves this run is
+        // orphaned; terminalize that interrupted segment so the ordinary,
+        // audited resume path can claim it immediately.
+        await workflowDb.failWorkflowRun(
+          run.id,
+          'Execution owner stopped before the workflow finalized. The run can be resumed.',
+          { exitReason: 'not_finalized' }
+        );
+        run = await workflowDb.getWorkflowRun(runId);
+        if (!run) return apiError(c, 404, 'Workflow run not found');
       }
       if (!RESUMABLE_WORKFLOW_STATUSES.includes(run.status)) {
         return apiError(c, 400, `Cannot resume workflow in '${run.status}' status`);
