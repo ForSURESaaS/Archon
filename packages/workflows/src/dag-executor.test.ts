@@ -18017,6 +18017,41 @@ describe('executeDagWorkflow -- script nodes', () => {
     expect(errorMsg).toContain('[eval]');
   });
 
+  it('preserves an ENOENT raised by a running script instead of blaming the runtime PATH', async () => {
+    const mockDeps = createMockDeps();
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun('script-inner-enoent-run-id', {
+      workflow_name: 'script-inner-enoent',
+      conversation_id: 'conv-inner-enoent',
+      user_message: 'test',
+    });
+
+    const scriptNode: ExecNode = {
+      id: 'inner-enoent',
+      kind: 'exec',
+      script:
+        "import { readFileSync } from 'node:fs'; readFileSync('/definitely/missing/archon-input.json', 'utf8');",
+      runtime: 'bun',
+    };
+
+    await executeDagWorkflow(
+      dagOptions({
+        deps: mockDeps,
+        platform,
+        conversationId: 'conv-inner-enoent',
+        cwd: testDir,
+        workflow: { name: 'script-inner-enoent', nodes: [scriptNode] },
+        workflowRun,
+      })
+    );
+
+    const failed = persistedEvents(mockDeps.store).find(
+      event => event.event_type === 'node_failed' && event.step_name === 'inner-enoent'
+    );
+    expect(failed?.data?.error).toContain('ENOENT');
+    expect(failed?.data?.error).not.toContain("'bun' executable not found in PATH");
+  });
+
   it('fails by default when the subprocess times out', async () => {
     const mockDeps = createMockDeps();
     const platform = createMockPlatform();

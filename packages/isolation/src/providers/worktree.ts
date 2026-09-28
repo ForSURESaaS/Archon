@@ -1200,13 +1200,25 @@ export class WorktreeProvider implements IIsolationProvider {
       // Only hard-reset for Archon-managed clones when creating isolated worktrees.
       // Locally-registered repos keep the non-destructive fast-forward mode.
       const isManagedClone = isInsideArchonWorkspaces(repoPath);
-      const { branch } = await syncWorkspace(
+      const sync = await syncWorkspace(
         repoPath,
         configuredBaseBranch ? toBranchName(configuredBaseBranch) : undefined,
         { mode: isManagedClone ? 'reset' : 'fast-forward', remote }
       );
-      getLog().debug({ repoPath, branch, remote }, 'workspace_synced');
-      return branch;
+      getLog().info(
+        {
+          repoPath,
+          branch: sync.branch,
+          remote,
+          mode: sync.mode,
+          state: sync.state,
+          previousHead: sync.previousHead,
+          fetchedHead: sync.newHead,
+          updated: sync.updated,
+        },
+        'workspace_source_refreshed'
+      );
+      return sync.branch;
     } catch (error) {
       const err = error as Error & { code?: string };
       const errorMessage = err.message.toLowerCase();

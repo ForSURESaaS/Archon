@@ -30,7 +30,7 @@ nodes:
     output_format:
       type: object
       properties:
-        intent: { type: string }
+        intent: { type: string, minLength: 1 }
       required: [intent]
 
   # This is the durable ownership record for every later public action in
