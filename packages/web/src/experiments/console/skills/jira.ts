@@ -65,6 +65,7 @@ export interface JiraIssue {
       tokensIn: number;
       tokensOut: number;
       costUsd: number;
+      requestCount: number;
       models: {
         model: string;
         tokensIn: number;

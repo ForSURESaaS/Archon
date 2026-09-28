@@ -132,6 +132,7 @@ export const jiraIssueSchema = z
             tokensIn: z.number().nonnegative(),
             tokensOut: z.number().nonnegative(),
             costUsd: z.number().nonnegative(),
+            requestCount: z.number().int().nonnegative(),
             models: z.array(
               z.object({
                 model: z.string(),

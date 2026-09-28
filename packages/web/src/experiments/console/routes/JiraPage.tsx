@@ -59,6 +59,9 @@ function JiraJobTelemetry({
           {compactTokens(telemetry.tokensIn)} in · {compactTokens(telemetry.tokensOut)} out
         </span>
         <span title={modelTitle}>{formatCost(telemetry.costUsd)}</span>
+        <span title={modelTitle}>
+          {telemetry.requestCount} request{telemetry.requestCount === 1 ? '' : 's'}
+        </span>
         <span title={new Date(ensureUtc(telemetry.startedAt)).toLocaleString()}>
           started {new Date(ensureUtc(telemetry.startedAt)).toLocaleTimeString()}
         </span>

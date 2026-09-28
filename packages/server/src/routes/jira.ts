@@ -93,6 +93,7 @@ interface JiraRunTelemetry {
   tokensIn: number;
   tokensOut: number;
   costUsd: number;
+  requestCount: number;
   models: {
     model: string;
     tokensIn: number;
@@ -279,6 +280,15 @@ async function getRunTelemetry(runId: string): Promise<JiraRunTelemetry | null> 
       ? graph.node_ids.filter((id: unknown): id is string => typeof id === 'string')
       : [];
   const nodes = terminalNodeIds(events);
+  const modelTotals = [...models.values()].reduce(
+    (totals, model) => ({
+      tokensIn: totals.tokensIn + model.tokensIn,
+      tokensOut: totals.tokensOut + model.tokensOut,
+      costUsd: totals.costUsd + model.costUsd,
+      requestCount: totals.requestCount + model.calls,
+    }),
+    { tokensIn: 0, tokensOut: 0, costUsd: 0, requestCount: 0 }
+  );
   const completed =
     nodeIds.length > 0
       ? nodeIds.filter(nodeId => nodes.completed.has(nodeId)).length
@@ -291,9 +301,22 @@ async function getRunTelemetry(runId: string): Promise<JiraRunTelemetry | null> 
     runStatus: run.status,
     startedAt: new Date(run.started_at).toISOString(),
     completedAt: run.completed_at === null ? null : new Date(run.completed_at).toISOString(),
-    tokensIn: readFiniteNonnegative(run.metadata.total_tokens_in) ?? 0,
-    tokensOut: readFiniteNonnegative(run.metadata.total_tokens_out) ?? 0,
-    costUsd: readFiniteNonnegative(run.metadata.total_cost_usd) ?? 0,
+    // Completed node events are updated during a live run and also power the
+    // per-model tooltip. Run metadata is finalized later, so using it here
+    // would make the card summary lag behind its own tooltip.
+    tokensIn:
+      modelTotals.requestCount > 0
+        ? modelTotals.tokensIn
+        : (readFiniteNonnegative(run.metadata.total_tokens_in) ?? 0),
+    tokensOut:
+      modelTotals.requestCount > 0
+        ? modelTotals.tokensOut
+        : (readFiniteNonnegative(run.metadata.total_tokens_out) ?? 0),
+    costUsd:
+      modelTotals.requestCount > 0
+        ? modelTotals.costUsd
+        : (readFiniteNonnegative(run.metadata.total_cost_usd) ?? 0),
+    requestCount: modelTotals.requestCount,
     models: [...models.entries()].map(([model, values]) => ({ model, ...values })),
     progress: {
       completed,
