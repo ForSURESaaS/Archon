@@ -2193,15 +2193,22 @@ export function registerApiRoutes(
     return null;
   }
 
-  function toCleanEntry(entry: { provider: string; model: string; effort?: EffortLevel }): {
+  function toCleanEntry(entry: {
     provider: string;
     model: string;
     effort?: EffortLevel;
+    enabled?: boolean;
+  }): {
+    provider: string;
+    model: string;
+    effort?: EffortLevel;
+    enabled?: boolean;
   } {
     return {
       provider: entry.provider,
       model: entry.model,
       ...(entry.effort !== undefined ? { effort: entry.effort } : {}),
+      ...(entry.enabled !== undefined ? { enabled: entry.enabled } : {}),
     };
   }
 

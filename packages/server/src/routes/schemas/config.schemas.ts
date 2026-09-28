@@ -18,6 +18,7 @@ export const tierEntrySchema = z
       provider: z.string().min(1),
       model: z.string().min(1),
       effort: effortLevelSchema.optional(),
+      enabled: z.boolean().optional(),
     })
   )
   .openapi('TierEntry');

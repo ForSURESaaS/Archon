@@ -73,7 +73,7 @@ describe('buildAssistantUpdate', () => {
   });
 });
 
-const BLANK: TierRowForm = { provider: '', model: '', effort: '' };
+const BLANK: TierRowForm = { provider: '', model: '', effort: '', enabled: true };
 function tierForm(
   over: Partial<Record<'small' | 'medium' | 'large', Partial<TierRowForm>>>
 ): TiersForm {
@@ -89,12 +89,17 @@ describe('buildTiersUpdate', () => {
     const body = buildTiersUpdate(
       tierForm({ large: { provider: 'claude', model: 'opus', effort: 'high' } })
     );
-    expect(body.tiers.large).toEqual({ provider: 'claude', model: 'opus', effort: 'high' });
+    expect(body.tiers.large).toEqual({
+      provider: 'claude',
+      model: 'opus',
+      effort: 'high',
+      enabled: true,
+    });
   });
 
   test('omits effort when blank', () => {
     const body = buildTiersUpdate(tierForm({ large: { provider: 'claude', model: 'opus' } }));
-    expect(body.tiers.large).toEqual({ provider: 'claude', model: 'opus' });
+    expect(body.tiers.large).toEqual({ provider: 'claude', model: 'opus', enabled: true });
   });
 
   test('blank provider → null (unset)', () => {
@@ -109,7 +114,7 @@ describe('buildTiersUpdate', () => {
 
   test('always sends all three tiers (set + null)', () => {
     const body = buildTiersUpdate(tierForm({ small: { provider: 'claude', model: 'haiku' } }));
-    expect(body.tiers.small).toEqual({ provider: 'claude', model: 'haiku' });
+    expect(body.tiers.small).toEqual({ provider: 'claude', model: 'haiku', enabled: true });
     expect(body.tiers.medium).toBeNull();
     expect(body.tiers.large).toBeNull();
   });
@@ -118,7 +123,23 @@ describe('buildTiersUpdate', () => {
     const body = buildTiersUpdate(
       tierForm({ large: { provider: '  claude ', model: ' opus ', effort: 'high' } })
     );
-    expect(body.tiers.large).toEqual({ provider: 'claude', model: 'opus', effort: 'high' });
+    expect(body.tiers.large).toEqual({
+      provider: 'claude',
+      model: 'opus',
+      effort: 'high',
+      enabled: true,
+    });
+  });
+
+  test('persists an independently disabled tier', () => {
+    const body = buildTiersUpdate(
+      tierForm({ medium: { provider: 'claude', model: 'sonnet', enabled: false } })
+    );
+    expect(body.tiers.medium).toEqual({
+      provider: 'claude',
+      model: 'sonnet',
+      enabled: false,
+    });
   });
 });
 

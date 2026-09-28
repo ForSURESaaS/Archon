@@ -29,7 +29,12 @@ import { ModelPickerField } from './ModelPickerField';
 function seedTiers(tiers: SafeConfigTiers['tiers']): TiersForm {
   const row = (t: TierName): TierRowForm => {
     const set = tiers?.[t];
-    return { provider: set?.provider ?? '', model: set?.model ?? '', effort: set?.effort ?? '' };
+    return {
+      provider: set?.provider ?? '',
+      model: set?.model ?? '',
+      effort: set?.effort ?? '',
+      enabled: set?.enabled !== false,
+    };
   };
   return { small: row('small'), medium: row('medium'), large: row('large') };
 }
@@ -48,6 +53,22 @@ function defaultHint(cfg: SafeConfigTiers, t: TierName, scope: SettingsScope): s
   }
   const d = cfg.tierDefaults?.[t];
   return d ? `${d.provider}/${d.model}` : 'no built-in — set a model';
+}
+
+function inheritedTier(
+  cfg: SafeConfigTiers,
+  tier: TierName,
+  scope: SettingsScope
+): TierRowForm | null {
+  const entry =
+    scope === 'user' ? (cfg.tiers?.[tier] ?? cfg.tierDefaults?.[tier]) : cfg.tierDefaults?.[tier];
+  if (!entry) return null;
+  return {
+    provider: entry.provider,
+    model: entry.model,
+    effort: entry.effort ?? '',
+    enabled: entry.enabled !== false,
+  };
 }
 
 /**
@@ -112,7 +133,7 @@ export function ModelTiersPanel(): ReactElement {
     async (tiers: TiersForm): Promise<void> => {
       const targets = TIER_ORDER.flatMap<ModelReadinessTarget>(tier => {
         const row = tiers[tier];
-        if (!row.provider.trim() || !row.model.trim()) return [];
+        if (!row.enabled || !row.provider.trim() || !row.model.trim()) return [];
         return [
           {
             tier,
@@ -218,6 +239,7 @@ export function ModelTiersPanel(): ReactElement {
         {TIER_ORDER.map(tier => {
           const row = form[tier];
           const unset = row.provider === '';
+          const disabled = !row.enabled;
           const effortOptions = effortOptionsForAgent(row.provider, providers);
           const status = readiness[tier];
           return (
@@ -228,6 +250,20 @@ export function ModelTiersPanel(): ReactElement {
               <div className="w-[78px] shrink-0 text-[13.5px] font-bold capitalize text-text-primary">
                 {tier}
               </div>
+              <label className="flex w-[86px] shrink-0 cursor-pointer items-center gap-2 font-mono text-[11px] text-text-secondary">
+                <input
+                  type="checkbox"
+                  checked={row.enabled}
+                  onChange={e => {
+                    const enabled = e.target.checked;
+                    const inherited = unset ? inheritedTier(cfg, tier, scope) : null;
+                    setRow(tier, inherited ? { ...inherited, enabled } : { enabled });
+                  }}
+                  aria-label={`Enable ${tier} model tier`}
+                  className="h-4 w-4 accent-brand-magenta"
+                />
+                {row.enabled ? 'Enabled' : 'Disabled'}
+              </label>
               <SelectShell className="w-[160px] shrink-0">
                 <select
                   value={row.provider}
@@ -241,7 +277,8 @@ export function ModelTiersPanel(): ReactElement {
                       effort: normalizeEffortForAgent(provider, row.effort, providers),
                     });
                   }}
-                  className={SELECT_CLASS}
+                  disabled={disabled}
+                  className={`${SELECT_CLASS} ${disabled ? 'opacity-50' : ''}`}
                 >
                   <option value="">Default ({defaultHint(cfg, tier, scope)})</option>
                   {providers.map(p => (
@@ -261,7 +298,7 @@ export function ModelTiersPanel(): ReactElement {
                 onChange={v => {
                   setRow(tier, { model: v });
                 }}
-                disabled={unset}
+                disabled={unset || disabled}
                 placeholder={
                   unset
                     ? `default: ${defaultHint(cfg, tier, scope)}`
@@ -285,9 +322,9 @@ export function ModelTiersPanel(): ReactElement {
                     // effort vocabulary), but every row control rides the
                     // shared disabled state so a future widening of `unset`
                     // can't silently skip this one.
-                    disabled={unset}
+                    disabled={unset || disabled}
                     aria-label={`${tier} effort`}
-                    className={`${SELECT_CLASS} ${unset ? 'opacity-50' : ''}`}
+                    className={`${SELECT_CLASS} ${unset || disabled ? 'opacity-50' : ''}`}
                   >
                     <option value="">effort</option>
                     {effortOptions.map(o => (
@@ -298,8 +335,12 @@ export function ModelTiersPanel(): ReactElement {
                   </select>
                 </SelectShell>
               ) : null}
-              <div className="w-full pl-[92px] font-mono text-[10.5px]">
-                {checking && status === undefined ? (
+              <div className="w-full pl-[106px] font-mono text-[10.5px]">
+                {disabled ? (
+                  <span className="text-text-tertiary">
+                    Disabled — requests for this tier fall back to another enabled tier.
+                  </span>
+                ) : checking && status === undefined ? (
                   <span className="text-text-tertiary">Checking live availability…</span>
                 ) : status?.ready ? (
                   <span className="text-success">

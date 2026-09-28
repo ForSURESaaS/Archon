@@ -85,7 +85,7 @@ export function buildAssistantUpdate(form: AssistantConfigForm): UpdateAssistant
 // `components['schemas']['TiersConfig']` etc. once the spec is regenerated.
 // ---------------------------------------------------------------------------
 
-export type TierEntry = components['schemas']['TierEntry'];
+export type TierEntry = components['schemas']['TierEntry'] & { enabled?: boolean };
 
 export interface TiersMap {
   small?: TierEntry;
@@ -114,6 +114,7 @@ export interface TierRowForm {
   provider: string; // '' = unset (falls back to the built-in default)
   model: string;
   effort: NonNullable<TierEntry['effort']> | '';
+  enabled: boolean;
 }
 
 export type TiersForm = Record<TierName, TierRowForm>;
@@ -152,6 +153,7 @@ export function buildTiersUpdate(form: TiersForm): UpdateTiersBody {
     if (provider && model) {
       const entry: TierEntry = { provider, model };
       if (row.effort) entry.effort = row.effort;
+      entry.enabled = row.enabled;
       tiers[tier] = entry;
     } else {
       tiers[tier] = null;

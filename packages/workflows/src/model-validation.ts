@@ -280,7 +280,11 @@ export function buildAiProfile(
     for (const [name, entry] of Object.entries(layer)) {
       assertValidTierName(name);
       assertValidEntry(name, entry);
-      aliases[name] = toModelAliasPreset(entry);
+      if (entry.enabled === false) {
+        Reflect.deleteProperty(aliases, name);
+      } else {
+        aliases[name] = toModelAliasPreset(entry);
+      }
     }
   }
 

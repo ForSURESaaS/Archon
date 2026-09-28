@@ -296,6 +296,18 @@ describe('buildAiProfile — per-user layer (highest precedence)', () => {
     expect(preset).toEqual({ provider: 'pi', model: 'minimax-m3' });
   });
 
+  test('disabled tiers are removed and requests fall back to an enabled tier', () => {
+    const profile = buildAiProfile('claude', {
+      globalTiers: {
+        large: { provider: 'claude', model: 'opus', enabled: false },
+        medium: { provider: 'claude', model: 'sonnet', enabled: true },
+      },
+    });
+    const { matchedTier, preset } = resolveTierWithFallback(profile, 'large');
+    expect(matchedTier).toBe('medium');
+    expect(preset).toEqual({ provider: 'claude', model: 'sonnet' });
+  });
+
   test('resolveTierWithFallback throws when no tier preset exists at all', () => {
     const profile = buildAiProfile('newprovider', {});
     expect(() => resolveTierWithFallback(profile, 'large')).toThrow(/no configured preset/);

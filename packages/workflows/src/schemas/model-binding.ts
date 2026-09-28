@@ -9,6 +9,7 @@ const modelAliasPresetObjectSchema = z.object({
   provider: z.string().min(1),
   model: z.string().min(1),
   effort: effortLevelSchema.optional(),
+  enabled: z.boolean().optional(),
 });
 export const modelAliasPresetSchema = z.preprocess(
   rejectRetiredThinking,
