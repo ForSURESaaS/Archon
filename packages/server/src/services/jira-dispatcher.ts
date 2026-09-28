@@ -213,6 +213,9 @@ async function refreshFailedClaimCheckout(
     );
   }
 
+  await execFileAsync('git', ['-C', workingPath, 'submodule', 'deinit', '--force', '--all'], {
+    timeout: 60_000,
+  });
   await execFileAsync('git', ['-C', repoPath, 'worktree', 'remove', workingPath], {
     timeout: 60_000,
   });
