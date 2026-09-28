@@ -124,6 +124,38 @@ export const jiraIssueSchema = z
         branchName: z.string().nullable(),
         prUrl: z.string().nullable(),
         conflictDetail: z.string().nullable(),
+        telemetry: z
+          .object({
+            runStatus: z.string(),
+            startedAt: z.string(),
+            completedAt: z.string().nullable(),
+            tokensIn: z.number().nonnegative(),
+            tokensOut: z.number().nonnegative(),
+            costUsd: z.number().nonnegative(),
+            models: z.array(
+              z.object({
+                model: z.string(),
+                tokensIn: z.number().nonnegative(),
+                tokensOut: z.number().nonnegative(),
+                costUsd: z.number().nonnegative(),
+                calls: z.number().int().nonnegative(),
+              })
+            ),
+            progress: z.object({
+              completed: z.number().int().nonnegative(),
+              total: z.number().int().nonnegative(),
+              active: z.array(z.string()),
+              etaSeconds: z.number().int().nonnegative().nullable(),
+            }),
+            changes: z
+              .object({
+                files: z.number().int().nonnegative(),
+                additions: z.number().int().nonnegative(),
+                deletions: z.number().int().nonnegative(),
+              })
+              .nullable(),
+          })
+          .nullable(),
       })
       .nullable(),
   })

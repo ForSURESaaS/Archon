@@ -3,6 +3,7 @@ import * as jiraQueueDb from '@archon/core/db/jira-queue';
 import * as workflowDb from '@archon/core/db/workflows';
 import * as workflowEventDb from '@archon/core/db/workflow-events';
 import * as userDb from '@archon/core/db/users';
+import { spawn } from 'bun';
 import type { JiraDispatcher } from '../services/jira-dispatcher';
 import {
   assertAllowedJiraBaseUrl,
@@ -84,6 +85,29 @@ interface JiraIssueCosts {
   byModel: { model: string; costUsd: number; calls: number }[];
 }
 
+interface JiraRunTelemetry {
+  runStatus: string;
+  startedAt: string;
+  completedAt: string | null;
+  tokensIn: number;
+  tokensOut: number;
+  costUsd: number;
+  models: {
+    model: string;
+    tokensIn: number;
+    tokensOut: number;
+    costUsd: number;
+    calls: number;
+  }[];
+  progress: {
+    completed: number;
+    total: number;
+    active: string[];
+    etaSeconds: number | null;
+  };
+  changes: { files: number; additions: number; deletions: number } | null;
+}
+
 function readFiniteNonnegative(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
@@ -96,6 +120,123 @@ function requestedModel(data: Record<string, unknown>): string | null {
   if (model === null || typeof model !== 'object') return null;
   const requested = (model as Record<string, unknown>).requested;
   return typeof requested === 'string' && requested.trim() !== '' ? requested : null;
+}
+
+function readTokens(data: Record<string, unknown>): { input: number; output: number } {
+  const tokens = data.tokens;
+  if (tokens === null || typeof tokens !== 'object') return { input: 0, output: 0 };
+  const value = tokens as Record<string, unknown>;
+  return {
+    input: readFiniteNonnegative(value.input) ?? 0,
+    output: readFiniteNonnegative(value.output) ?? 0,
+  };
+}
+
+function terminalNodeIds(events: Awaited<ReturnType<typeof workflowEventDb.listWorkflowEvents>>): {
+  completed: Set<string>;
+  active: Set<string>;
+  durationMs: number;
+} {
+  const completed = new Set<string>();
+  const active = new Set<string>();
+  let durationMs = 0;
+  for (const event of events) {
+    const nodeId = event.step_name;
+    if (!nodeId) continue;
+    if (event.event_type === 'node_started') active.add(nodeId);
+    if (
+      event.event_type === 'node_completed' ||
+      event.event_type === 'node_failed' ||
+      event.event_type === 'node_skipped' ||
+      event.event_type === 'node_skipped_prior_success'
+    ) {
+      completed.add(nodeId);
+      active.delete(nodeId);
+      durationMs += readFiniteNonnegative(event.data.duration_ms) ?? 0;
+    }
+  }
+  return { completed, active, durationMs };
+}
+
+async function readRunChanges(
+  workingPath: string | null,
+  baseline: unknown
+): Promise<{ files: number; additions: number; deletions: number } | null> {
+  if (!workingPath || baseline === null || typeof baseline !== 'object') return null;
+  const base = baseline as { kind?: unknown; commit?: unknown };
+  if (base.kind !== 'git' || typeof base.commit !== 'string') return null;
+  const child = spawn({
+    cmd: ['git', '-C', workingPath, 'diff', '--numstat', `${base.commit}...HEAD`],
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [exitCode, stdout] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (exitCode !== 0) return null;
+  let files = 0;
+  let additions = 0;
+  let deletions = 0;
+  for (const line of stdout.trim().split('\n')) {
+    if (!line) continue;
+    const [added, deleted] = line.split('\t');
+    files++;
+    if (added !== '-') additions += Number(added) || 0;
+    if (deleted !== '-') deletions += Number(deleted) || 0;
+  }
+  return { files, additions, deletions };
+}
+
+async function getRunTelemetry(runId: string): Promise<JiraRunTelemetry | null> {
+  const run = await workflowDb.getWorkflowRun(runId);
+  if (!run) return null;
+  const events = await workflowEventDb.listWorkflowEvents(runId);
+  const models = new Map<
+    string,
+    { tokensIn: number; tokensOut: number; costUsd: number; calls: number }
+  >();
+  for (const event of events) {
+    if (event.event_type !== 'node_completed') continue;
+    const model = requestedModel(event.data);
+    if (!model) continue;
+    const tokens = readTokens(event.data);
+    const prior = models.get(model) ?? { tokensIn: 0, tokensOut: 0, costUsd: 0, calls: 0 };
+    prior.tokensIn += tokens.input;
+    prior.tokensOut += tokens.output;
+    prior.costUsd += readFiniteNonnegative(event.data.cost_usd) ?? 0;
+    prior.calls++;
+    models.set(model, prior);
+  }
+  const graph = run.metadata.terminal_graph as { node_ids?: unknown } | undefined;
+  const nodeIds =
+    graph !== null && typeof graph === 'object' && Array.isArray(graph.node_ids)
+      ? graph.node_ids.filter((id: unknown): id is string => typeof id === 'string')
+      : [];
+  const nodes = terminalNodeIds(events);
+  const remaining = Math.max(0, nodeIds.length - nodes.completed.size);
+  const averageSeconds =
+    nodes.completed.size > 0 ? nodes.durationMs / nodes.completed.size / 1000 : null;
+  return {
+    runStatus: run.status,
+    startedAt: new Date(run.started_at).toISOString(),
+    completedAt: run.completed_at === null ? null : new Date(run.completed_at).toISOString(),
+    tokensIn: readFiniteNonnegative(run.metadata.total_tokens_in) ?? 0,
+    tokensOut: readFiniteNonnegative(run.metadata.total_tokens_out) ?? 0,
+    costUsd: readFiniteNonnegative(run.metadata.total_cost_usd) ?? 0,
+    models: [...models.entries()].map(([model, values]) => ({ model, ...values })),
+    progress: {
+      completed: nodes.completed.size,
+      total: nodeIds.length,
+      active: [...nodes.active],
+      etaSeconds:
+        run.status === 'running' && averageSeconds !== null
+          ? Math.max(0, Math.round(averageSeconds * remaining))
+          : null,
+    },
+    changes: await readRunChanges(run.working_path, run.checkout_baseline),
+  };
 }
 
 async function getIssueCosts(jobId: string): Promise<JiraIssueCosts | null> {
@@ -460,20 +601,27 @@ export function registerJiraRoutes(app: OpenAPIHono, dispatcher: JiraDispatcher)
     async c => {
       const { id } = c.req.valid('param');
       const snapshot = await dispatcher.getSnapshot(id, true);
+      const jobs = await Promise.all(
+        snapshot.issues.map(async issue => {
+          if (issue.raw.job === null || typeof issue.raw.job !== 'object') return null;
+          const job = issue.raw.job as {
+            id: string;
+            status: string;
+            workflowRunId: string | null;
+            branchName: string | null;
+            prUrl: string | null;
+            conflictDetail: string | null;
+          };
+          return {
+            ...job,
+            telemetry: job.workflowRunId ? await getRunTelemetry(job.workflowRunId) : null,
+          };
+        })
+      );
       return c.json({
-        issues: snapshot.issues.map(issue => ({
+        issues: snapshot.issues.map((issue, index) => ({
           ...issue,
-          job:
-            issue.raw.job !== null && typeof issue.raw.job === 'object'
-              ? (issue.raw.job as {
-                  id: string;
-                  status: string;
-                  workflowRunId: string | null;
-                  branchName: string | null;
-                  prUrl: string | null;
-                  conflictDetail: string | null;
-                })
-              : null,
+          job: jobs[index] ?? null,
         })),
         enabled: snapshot.enabled,
         credentialsConfigured: snapshot.credentialsConfigured,

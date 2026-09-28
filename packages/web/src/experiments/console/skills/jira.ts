@@ -58,6 +58,28 @@ export interface JiraIssue {
     branchName: string | null;
     prUrl: string | null;
     conflictDetail: string | null;
+    telemetry: {
+      runStatus: string;
+      startedAt: string;
+      completedAt: string | null;
+      tokensIn: number;
+      tokensOut: number;
+      costUsd: number;
+      models: {
+        model: string;
+        tokensIn: number;
+        tokensOut: number;
+        costUsd: number;
+        calls: number;
+      }[];
+      progress: {
+        completed: number;
+        total: number;
+        active: string[];
+        etaSeconds: number | null;
+      };
+      changes: { files: number; additions: number; deletions: number } | null;
+    } | null;
   } | null;
 }
 

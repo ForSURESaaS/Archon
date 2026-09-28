@@ -3,13 +3,99 @@ import { Link, useParams } from 'react-router';
 import { ExternalLink } from 'lucide-react';
 import { ProjectViewTabs } from '../components/ProjectViewTabs';
 import { useBackgroundRefresh } from '../lib/background-refresh';
-import { formatCost } from '../lib/format';
+import { elapsedSince, ensureUtc, formatCost, formatElapsed } from '../lib/format';
 import { invalidate, useEntity } from '../store/cache';
 import * as skill from '../skills';
 
 const ACTIVE_STATUSES = ['TO DO', 'IN PROGRESS', 'MANUAL TEST'] as const;
 const ARCHIVE_STATUS = 'DEVELOPMENT DONE';
 const ARCHIVE_PAGE_SIZE = 20;
+
+function compactTokens(value: number): string {
+  return new Intl.NumberFormat(undefined, {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function JiraJobTelemetry({
+  job,
+}: {
+  job: NonNullable<skill.JiraIssue['job']>;
+}): ReactElement | null {
+  const telemetry = job.telemetry;
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (telemetry?.runStatus !== 'running') return;
+    const timer = window.setInterval(() => {
+      tick(value => value + 1);
+    }, 1_000);
+    return (): void => {
+      window.clearInterval(timer);
+    };
+  }, [telemetry?.runStatus]);
+  if (!telemetry) return null;
+  const progress =
+    telemetry.progress.total > 0
+      ? Math.min(100, Math.round((telemetry.progress.completed / telemetry.progress.total) * 100))
+      : 0;
+  const duration = elapsedSince(
+    telemetry.startedAt,
+    telemetry.completedAt === null ? undefined : telemetry.completedAt
+  );
+  const modelTitle =
+    telemetry.models.length > 0
+      ? telemetry.models
+          .map(
+            model =>
+              `${model.model}\n${compactTokens(model.tokensIn)} in / ${compactTokens(model.tokensOut)} out · ${formatCost(model.costUsd)} · ${String(model.calls)} call(s)`
+          )
+          .join('\n\n')
+      : 'No completed model calls yet.';
+  return (
+    <div className="mt-2 grid gap-2 rounded border border-border/70 bg-surface-elevated p-2 font-mono text-[10px]">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-text-secondary">
+        <span title={modelTitle}>
+          {compactTokens(telemetry.tokensIn)} in · {compactTokens(telemetry.tokensOut)} out
+        </span>
+        <span title={modelTitle}>{formatCost(telemetry.costUsd)}</span>
+        <span title={new Date(ensureUtc(telemetry.startedAt)).toLocaleString()}>
+          started {new Date(ensureUtc(telemetry.startedAt)).toLocaleTimeString()}
+        </span>
+        <span>{formatElapsed(duration)}</span>
+        {telemetry.changes ? (
+          <span title={`${String(telemetry.changes.files)} changed file(s)`}>
+            <span className="text-success">+{telemetry.changes.additions}</span>{' '}
+            <span className="text-error">−{telemetry.changes.deletions}</span>
+          </span>
+        ) : null}
+      </div>
+      <div>
+        <div className="mb-1 flex items-center justify-between gap-2 text-text-tertiary">
+          <span className="truncate">
+            {telemetry.progress.active.length > 0
+              ? telemetry.progress.active.join(', ')
+              : telemetry.runStatus}
+          </span>
+          <span className="shrink-0">
+            {telemetry.progress.completed}/{telemetry.progress.total} · {progress}%
+            {telemetry.progress.etaSeconds !== null
+              ? ` · ETA ${formatElapsed(telemetry.progress.etaSeconds)}`
+              : telemetry.runStatus === 'running'
+                ? ' · estimating ETA'
+                : ''}
+          </span>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-surface">
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-500"
+            style={{ width: `${String(progress)}%` }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function statusTone(status: string): string {
   if (status === 'IN PROGRESS') return 'border-running/40 bg-running-soft';
@@ -436,6 +522,7 @@ export function JiraPage(): ReactElement {
                           <ExternalLink className="h-3 w-3" aria-hidden />
                         </a>
                         <p className="mt-1 font-medium">{issue.summary}</p>
+                        {job ? <JiraJobTelemetry job={job} /> : null}
                         {job?.conflictDetail && job.status === 'failed' ? (
                           <button
                             type="button"
