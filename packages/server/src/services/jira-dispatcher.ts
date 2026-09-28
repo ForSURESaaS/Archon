@@ -637,7 +637,7 @@ export class JiraDispatcher {
               isolation: {
                 kind: 'worktree',
                 branch: branchName,
-                fromBranch: record.config.branches.base,
+                fromBranch: `origin/${record.config.branches.base}`,
                 baseOverride: record.config.branches.base,
               },
             },
