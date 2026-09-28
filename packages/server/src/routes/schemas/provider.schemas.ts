@@ -23,6 +23,35 @@ export const providerListResponseSchema = z
   })
   .openapi('ProviderListResponse');
 
+const modelReadinessTargetSchema = z
+  .object({
+    tier: z.enum(['small', 'medium', 'large']),
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    effort: z.enum(EFFORT_LADDER).optional(),
+  })
+  .openapi('ModelReadinessTarget');
+
+export const modelReadinessBodySchema = z
+  .object({
+    targets: z.array(modelReadinessTargetSchema).min(1).max(3),
+  })
+  .openapi('ModelReadinessBody');
+
+const modelReadinessResultSchema = modelReadinessTargetSchema
+  .extend({
+    ready: z.boolean(),
+    durationMs: z.number().int().nonnegative(),
+    detail: z.string().optional(),
+  })
+  .openapi('ModelReadinessResult');
+
+export const modelReadinessResponseSchema = z
+  .object({
+    results: z.array(modelReadinessResultSchema),
+  })
+  .openapi('ModelReadinessResponse');
+
 /** One Pi catalog model — metadata only (no credentials). */
 export const piModelInfoSchema = z
   .object({

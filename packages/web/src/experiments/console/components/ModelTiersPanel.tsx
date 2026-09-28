@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import * as skill from '../skills';
 import type {
   PiModelInfo,
@@ -10,6 +10,8 @@ import type {
   TierRowForm,
   SettingsScope,
   UserAiPrefs,
+  ModelReadinessResult,
+  ModelReadinessTarget,
 } from '../skills';
 import { TIER_ORDER } from '../skills';
 import { useEntity, invalidate } from '../store/cache';
@@ -98,9 +100,62 @@ export function ModelTiersPanel(): ReactElement {
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [readiness, setReadiness] = useState<Partial<Record<TierName, ModelReadinessResult>>>({});
+  const [readinessError, setReadinessError] = useState<string | null>(null);
+  const lastAutomaticCheckRef = useRef('');
 
   // Guard async setState after unmount (mirrors AgentsPanel's cards).
   const cancelledRef = useCancelledRef();
+
+  const checkAll = useCallback(
+    async (tiers: TiersForm): Promise<void> => {
+      const targets = TIER_ORDER.flatMap<ModelReadinessTarget>(tier => {
+        const row = tiers[tier];
+        if (!row.provider.trim() || !row.model.trim()) return [];
+        return [
+          {
+            tier,
+            provider: row.provider.trim(),
+            model: row.model.trim(),
+            ...(row.effort ? { effort: row.effort } : {}),
+          },
+        ];
+      });
+      if (targets.length === 0) {
+        setReadiness({});
+        return;
+      }
+      setChecking(true);
+      setReadinessError(null);
+      try {
+        const response = await skill.checkModelReadiness(targets);
+        if (cancelledRef.current) return;
+        setReadiness(
+          Object.fromEntries(response.results.map(result => [result.tier, result])) as Partial<
+            Record<TierName, ModelReadinessResult>
+          >
+        );
+      } catch (error: unknown) {
+        if (!cancelledRef.current) {
+          setReadinessError(
+            error instanceof Error ? errorDetail(error) : 'Readiness check failed.'
+          );
+        }
+      } finally {
+        if (!cancelledRef.current) setChecking(false);
+      }
+    },
+    [cancelledRef]
+  );
+
+  useEffect(() => {
+    if (form === null) return;
+    const key = `${scope}:${baselineRef.current}`;
+    if (key === lastAutomaticCheckRef.current) return;
+    lastAutomaticCheckRef.current = key;
+    void checkAll(form);
+  }, [checkAll, form, scope]);
 
   const loadError = configError ?? providersError;
   if (loadError !== undefined) {
@@ -164,6 +219,7 @@ export function ModelTiersPanel(): ReactElement {
           const row = form[tier];
           const unset = row.provider === '';
           const effortOptions = effortOptionsForAgent(row.provider, providers);
+          const status = readiness[tier];
           return (
             <div
               key={tier}
@@ -242,6 +298,21 @@ export function ModelTiersPanel(): ReactElement {
                   </select>
                 </SelectShell>
               ) : null}
+              <div className="w-full pl-[92px] font-mono text-[10.5px]">
+                {checking && status === undefined ? (
+                  <span className="text-text-tertiary">Checking live availability…</span>
+                ) : status?.ready ? (
+                  <span className="text-success">
+                    ● Ready — live response in {(status.durationMs / 1000).toFixed(1)}s
+                  </span>
+                ) : status ? (
+                  <span className="text-error" title={status.detail}>
+                    ● Unavailable — {status.detail ?? 'provider request failed'}
+                  </span>
+                ) : (
+                  <span className="text-text-tertiary">Set a provider and model to check.</span>
+                )}
+              </div>
             </div>
           );
         })}
@@ -254,10 +325,21 @@ export function ModelTiersPanel(): ReactElement {
         </p>
       ) : null}
 
-      <div className="mt-[18px] flex items-center justify-end gap-3">
+      <div className="mt-[18px] flex flex-wrap items-center justify-end gap-3">
+        {readinessError !== null ? (
+          <span className="font-mono text-[11px] text-error">{readinessError}</span>
+        ) : null}
         {saveError !== null ? (
           <span className="font-mono text-[11px] text-error">{saveError}</span>
         ) : null}
+        <button
+          type="button"
+          onClick={() => void checkAll(form)}
+          disabled={checking}
+          className="rounded-[10px] border border-border px-[18px] py-2.5 text-[13px] font-bold text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary disabled:opacity-40"
+        >
+          {checking ? 'Checking…' : 'Check all models'}
+        </button>
         <button
           type="button"
           onClick={() => void onSave()}

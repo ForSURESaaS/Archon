@@ -118,6 +118,25 @@ export interface TierRowForm {
 
 export type TiersForm = Record<TierName, TierRowForm>;
 
+export interface ModelReadinessTarget extends TierEntry {
+  tier: TierName;
+}
+
+export interface ModelReadinessResult extends ModelReadinessTarget {
+  ready: boolean;
+  durationMs: number;
+  detail?: string;
+}
+
+export function checkModelReadiness(
+  targets: ModelReadinessTarget[]
+): Promise<{ results: ModelReadinessResult[] }> {
+  return requestJson<{ results: ModelReadinessResult[] }>('/api/providers/readiness', {
+    method: 'POST',
+    body: JSON.stringify({ targets }),
+  });
+}
+
 /**
  * Pure form → PATCH body. A row whose provider OR model is blank is sent as
  * `null` (unset → built-in default); a fully-set row carries `effort` when

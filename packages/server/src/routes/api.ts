@@ -72,7 +72,10 @@ import {
   setUserTiers,
   setUserAliases,
   setUserDefault,
+  deliverCredential,
+  listDecryptedUserProviderCredentials,
 } from '@archon/core';
+import { getAgentProvider } from '@archon/core/services/provider-admission';
 import type { UserTiersPatch, UserAliasesPatch, AliasesPatch } from '@archon/core';
 import { InvalidConfigError, parseWorkflowRunConfig } from '@archon/core/config';
 import type { WorkflowRunConfigInput } from '@archon/workflows/schemas/run-config';
@@ -368,6 +371,8 @@ import {
 import type { RunModelOverrides } from '@archon/workflows/model-validation';
 import {
   providerListResponseSchema,
+  modelReadinessBodySchema,
+  modelReadinessResponseSchema,
   piModelListResponseSchema,
   opencodeCredentialListResponseSchema,
 } from './schemas/provider.schemas';
@@ -1310,6 +1315,27 @@ const getProvidersRoute = createRoute({
       content: { 'application/json': { schema: providerListResponseSchema } },
       description: 'List of registered providers',
     },
+  },
+});
+
+const checkModelReadinessRoute = createRoute({
+  method: 'post',
+  path: '/api/providers/readiness',
+  tags: ['System'],
+  summary: 'Verify configured provider/model targets with live requests',
+  request: {
+    body: {
+      content: { 'application/json': { schema: modelReadinessBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: modelReadinessResponseSchema } },
+      description: 'Per-target live readiness results',
+    },
+    400: jsonError('Invalid readiness target'),
+    500: jsonError('Server error'),
   },
 });
 
@@ -5174,6 +5200,89 @@ export function registerApiRoutes(
   // GET /api/providers - List registered AI providers
   registerOpenApiRoute(getProvidersRoute, c => {
     return c.json({ providers: getProviderInfoList() });
+  });
+
+  // POST /api/providers/readiness - Prove that each exact provider/model can answer now.
+  registerOpenApiRoute(checkModelReadinessRoute, async c => {
+    const { targets } = getValidatedBody(c, modelReadinessBodySchema);
+    for (const target of targets) {
+      const error = validatePresetEntry(`tier '${target.tier}'`, target);
+      if (error) return apiError(c, 400, error);
+    }
+
+    const config = await loadConfig();
+    const userId = await resolveWebUserId(c);
+    const credentialEnv: Record<string, string> = {};
+    if (userId && isPerUserProviderKeysEnabled()) {
+      const credentials = await listDecryptedUserProviderCredentials(userId);
+      for (const { provider, cred } of credentials) {
+        try {
+          const delivered = deliverCredential(provider, cred, { artifactsDir: '' });
+          if (!delivered.files?.length) Object.assign(credentialEnv, delivered.env);
+        } catch (error) {
+          getLog().warn(
+            { err: error as Error, provider, userId },
+            'provider_readiness_credential_delivery_failed'
+          );
+        }
+      }
+    }
+
+    const results = await Promise.all(
+      targets.map(async target => {
+        const startedAt = Date.now();
+        const controller = new AbortController();
+        const timeout = setTimeout(() => {
+          controller.abort();
+        }, 30_000);
+        try {
+          let terminalError: string | undefined;
+          for await (const chunk of getAgentProvider(target.provider).sendQuery(
+            'Reply with exactly READY.',
+            getArchonHome(),
+            undefined,
+            {
+              model: target.model,
+              assistantConfig: { ...(config.assistants[target.provider] ?? {}) },
+              env: Object.keys(credentialEnv).length > 0 ? credentialEnv : undefined,
+              protectedEnvKeys:
+                Object.keys(credentialEnv).length > 0 ? Object.keys(credentialEnv) : undefined,
+              abortSignal: controller.signal,
+              persistSession: false,
+              ...(target.effort
+                ? { nodeConfig: { effort: target.effort, tools: [] } }
+                : { nodeConfig: { tools: [] } }),
+            }
+          )) {
+            if (chunk.type === 'result' && (chunk.failure || chunk.isError)) {
+              terminalError =
+                chunk.failure?.evidence ?? chunk.errors?.join('; ') ?? 'Provider reported an error';
+            }
+          }
+          return {
+            ...target,
+            ready: terminalError === undefined,
+            durationMs: Date.now() - startedAt,
+            ...(terminalError ? { detail: terminalError } : {}),
+          };
+        } catch (error) {
+          const detail = controller.signal.aborted
+            ? 'Timed out after 30 seconds'
+            : error instanceof Error
+              ? error.message
+              : 'Provider request failed';
+          return {
+            ...target,
+            ready: false,
+            durationMs: Date.now() - startedAt,
+            detail,
+          };
+        } finally {
+          clearTimeout(timeout);
+        }
+      })
+    );
+    return c.json({ results });
   });
 
   // GET /api/providers/pi/models - Pi model catalog (best-effort hint; [] on failure)
