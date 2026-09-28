@@ -61,7 +61,12 @@ export class InProcessWorkflowEngine implements IWorkflowEngine {
       }
       workflow = input.legacyWorkflow;
     }
-    const hydrated = await hydrateResumableRun(this.deps, input.run, input.cursor);
+    const hydrated = await hydrateResumableRun(
+      this.deps,
+      input.run,
+      input.cursor,
+      input.restartIfEmpty
+    );
     if (hydrated === null) return { accepted: false, reason: 'nothing-to-resume' };
 
     const settled = executeWorkflow(

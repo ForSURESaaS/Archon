@@ -4559,6 +4559,29 @@ describe('hydrateResumableRun', () => {
     expect(store.resumeWorkflowRun).not.toHaveBeenCalled();
   });
 
+  it('claims an empty failed run when an operator explicitly requests restart', async () => {
+    const candidate = makeRun({ id: 'empty-explicit-retry', status: 'failed' });
+    const resumed = makeRun({ id: 'empty-explicit-retry', status: 'running' });
+    const store = makeStore({
+      getDagResumeSnapshot: mock(async () => ({
+        completedNodeOutputs: new Map(),
+        fanOutSnapshots: new Map(),
+        unresolvedNodeStarts: new Set<string>(),
+        tokens: { input: 0, output: 0 },
+        costUsd: 0,
+      })),
+      resumeWorkflowRun: mock(async () => resumed),
+    });
+
+    const result = await hydrateResumableRun(makeDeps(store), candidate, undefined, true);
+
+    expect(result?.preCreatedRun).toBe(resumed);
+    expect(result?.priorCompletedNodes.size).toBe(0);
+    expect(result?.priorUsage).toEqual({ tokens: { input: 0, output: 0 }, costUsd: 0 });
+    expect(result?.priorNodeSessions).toEqual([]);
+    expect(store.resumeWorkflowRun).toHaveBeenCalledWith('empty-explicit-retry');
+  });
+
   it('hydrates fan-out-only recovery state before any inner node completed', async () => {
     const fanOutSnapshots = new Map([
       [

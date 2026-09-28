@@ -48,6 +48,11 @@ export interface WorkflowResumeInput extends WorkflowEngineCallBase {
   /** Used only for runs created before frozen workflow-source captures existed. */
   legacyWorkflow?: ResolvedWorkflow;
   cursor?: WorkflowResumeCursor;
+  /**
+   * Explicit operator retries may replay a run that failed before its first node
+   * completed. Automatic continuation discovery must leave this disabled.
+   */
+  restartIfEmpty?: boolean;
   options?: WorkflowResumeOptions;
 }
 

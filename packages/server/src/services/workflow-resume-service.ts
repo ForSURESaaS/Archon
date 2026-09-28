@@ -176,6 +176,10 @@ export async function resumeWorkflowRunFromServer(
         conversationDbId: resumableRun.conversation_id,
         run: resumableRun,
         cursor,
+        // This service is called only by explicit operator actions and durable
+        // scheduled continuations. If the first node failed, retry from the
+        // beginning instead of reporting that there is nothing to resume.
+        restartIfEmpty: true,
         options: {
           codebaseId: resumableRun.codebase_id ?? undefined,
           userId: effectiveUserId,

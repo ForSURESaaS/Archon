@@ -1077,7 +1077,8 @@ export interface ResumableRunInspection {
 /** Read whether a candidate has state worth resuming without claiming or mutating it. */
 export async function inspectResumableRun(
   deps: WorkflowDeps,
-  candidate: WorkflowRun
+  candidate: WorkflowRun,
+  allowEmpty = false
 ): Promise<ResumableRunInspection | null> {
   const snapshot = await deps.store.getDagResumeSnapshot(candidate.id);
   const priorCompletedNodes = snapshot.completedNodeOutputs;
@@ -1095,7 +1096,8 @@ export async function inspectResumableRun(
     !hasReRunGateState &&
     !hasWaitState &&
     !hasScheduledResume &&
-    !hasFanOutRecoveryState
+    !hasFanOutRecoveryState &&
+    !allowEmpty
   ) {
     getLog().info(
       { resumableRunId: candidate.id },
@@ -1128,14 +1130,15 @@ export async function inspectResumableRun(
 export async function hydrateResumableRun(
   deps: WorkflowDeps,
   candidate: WorkflowRun,
-  cursor?: WorkflowResumeCursor
+  cursor?: WorkflowResumeCursor,
+  allowEmpty = false
 ): Promise<{
   preCreatedRun: WorkflowRun;
   priorCompletedNodes: Map<string, PersistedNodeOutput>;
   priorUsage: PriorRunUsage;
   priorNodeSessions: WorkflowRunNodeSession[];
 } | null> {
-  const inspection = await inspectResumableRun(deps, candidate);
+  const inspection = await inspectResumableRun(deps, candidate, allowEmpty);
   if (inspection === null) return null;
   const { priorCompletedNodes, priorUsage } = inspection;
   // A gate whose node deliberately writes NO node_completed on pause must still be
