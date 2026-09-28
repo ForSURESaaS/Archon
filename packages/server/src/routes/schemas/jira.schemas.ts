@@ -32,6 +32,8 @@ export const jiraQueueConfigSchema = z
         claimed: z.string().min(1).default('IN PROGRESS'),
         ready_for_manual_test_via: z.array(z.string().min(1)).default([]),
         ready_for_manual_test: z.string().min(1).default('DONE'),
+        done_via: z.array(z.string().min(1)).default([]),
+        done: z.string().min(1).default('DONE'),
         terminal: z.array(z.string().min(1)).default(['DONE']),
       })
       .strict(),
@@ -79,6 +81,7 @@ export const jiraIssueSchema = z
   .object({
     id: z.string(),
     key: z.string(),
+    projectKey: z.string(),
     summary: z.string(),
     description: z.string(),
     status: z.string(),
@@ -86,8 +89,33 @@ export const jiraIssueSchema = z
     priority: z.string().nullable(),
     labels: z.array(z.string()),
     updated: z.string(),
+    version: z.union([z.string(), z.number()]).nullable(),
     url: z.string(),
     sourceRevision: z.string(),
+    parent: z
+      .object({
+        key: z.string(),
+        summary: z.string(),
+        status: z.string(),
+        issueType: z.string(),
+      })
+      .nullable(),
+    subtasks: z.array(
+      z.object({
+        key: z.string(),
+        summary: z.string(),
+        status: z.string(),
+        issueType: z.string(),
+      })
+    ),
+    attachments: z.array(
+      z.object({
+        id: z.string(),
+        filename: z.string(),
+        mimeType: z.string(),
+        size: z.number(),
+      })
+    ),
     job: z
       .object({
         id: z.string(),
@@ -111,6 +139,39 @@ export const jiraQueueResponseSchema = z
     lastError: z.string().nullable(),
   })
   .openapi('JiraQueueResponse');
+
+export const jiraIssueDetailResponseSchema = z
+  .object({
+    issue: jiraIssueSchema.omit({ job: true }),
+    transitions: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        destination: z.string(),
+      })
+    ),
+    costs: z
+      .object({
+        totalUsd: z.number().nonnegative(),
+        attributedUsd: z.number().nonnegative(),
+        unattributedUsd: z.number().nonnegative(),
+        runCount: z.number().int().nonnegative(),
+        byModel: z.array(
+          z.object({
+            model: z.string(),
+            costUsd: z.number().nonnegative(),
+            calls: z.number().int().nonnegative(),
+          })
+        ),
+      })
+      .nullable(),
+  })
+  .openapi('JiraIssueDetailResponse');
+
+export const jiraTransitionRequestSchema = z
+  .object({ transitionId: z.string().regex(/^\d+$/) })
+  .strict()
+  .openapi('JiraTransitionRequest');
 
 export const jiraDispatchResponseSchema = z
   .object({

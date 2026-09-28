@@ -152,7 +152,8 @@ export function ModelTiersPanel(): ReactElement {
         <p className="min-w-[260px] flex-1 text-[12.5px] leading-relaxed text-text-tertiary">
           Bundled workflows resolve <code className="font-mono">small</code> /{' '}
           <code className="font-mono">medium</code> / <code className="font-mono">large</code> to
-          these models. Leave a row on “Default” to use the next layer’s preset.
+          these execution agents and models. Pi rows expose their API provider separately (Azure
+          OpenAI, OpenRouter, and others). Leave a row on “Default” to use the next layer’s preset.
           {scope === 'user' ? ' Your rows override the install rows for runs you start.' : ''}
         </p>
         {userScopeAvailable ? <ScopeToggle scope={scope} onChange={setScope} /> : null}
@@ -189,7 +190,7 @@ export function ModelTiersPanel(): ReactElement {
                   <option value="">Default ({defaultHint(cfg, tier, scope)})</option>
                   {providers.map(p => (
                     <option key={p.id} value={p.id}>
-                      {p.displayName}
+                      {p.displayName} agent
                       {providerOptionHint(keyData?.agents, p.id)}
                     </option>
                   ))}

@@ -28,6 +28,7 @@ export interface Run {
   tokensOut: number | null;
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
+  modelCosts?: { model: string; costUsd: number; calls: number }[];
   /** DB id of the conversation this run belongs to. */
   conversationId: string | null;
   /**
@@ -136,6 +137,8 @@ interface RawWorkflowRun {
   current_step_name?: string | null;
   /** Run-tree parent id (#2121 Phase 2); null/absent for top-level runs. */
   parent_run_id?: string | null;
+  /** Optional cost-ledger enrichment populated by listCostRuns. */
+  model_costs?: { model: string; costUsd: number; calls: number }[];
 }
 
 const KNOWN_STATUSES: readonly RunStatus[] = [
@@ -290,6 +293,7 @@ export function toRun(raw: RawWorkflowRun): Run {
     tokensOut: readUsage(raw.metadata, 'total_tokens_out'),
     cacheReadTokens: readUsage(raw.metadata, 'total_cache_read_tokens'),
     cacheWriteTokens: readUsage(raw.metadata, 'total_cache_write_tokens'),
+    modelCosts: raw.model_costs ?? [],
     activeNodes,
     currentNode: activeNodes.length === 1 ? (activeNodes[0] ?? null) : null,
     lastTool: null,

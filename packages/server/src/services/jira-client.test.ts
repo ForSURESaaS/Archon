@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
-import { JiraClient, jiraCredentialsFromEnv } from './jira-client';
+import { assertAllowedJiraBaseUrl, JiraClient, jiraCredentialsFromEnv } from './jira-client';
 import type { JiraQueueConfig } from '@archon/core/db/jira-queue';
 
 const config: JiraQueueConfig = {
@@ -18,6 +18,8 @@ const config: JiraQueueConfig = {
     claimed: 'IN PROGRESS',
     ready_for_manual_test_via: [],
     ready_for_manual_test: 'READY FOR TEST',
+    done_via: [],
+    done: 'DONE',
     terminal: ['DONE'],
   },
   automation: { poll_interval_seconds: 60, concurrency: 1 },
@@ -26,11 +28,42 @@ const config: JiraQueueConfig = {
 };
 
 const originalFetch = globalThis.fetch;
+const originalAllowedBaseUrls = process.env.JIRA_ALLOWED_BASE_URLS;
+process.env.JIRA_ALLOWED_BASE_URLS = 'https://jira.example,https://example.invalid';
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  if (originalAllowedBaseUrls === undefined) {
+    process.env.JIRA_ALLOWED_BASE_URLS = 'https://jira.example,https://example.invalid';
+  } else {
+    process.env.JIRA_ALLOWED_BASE_URLS = originalAllowedBaseUrls;
+  }
 });
 
 describe('JiraClient', () => {
+  test('allows Atlassian Cloud and exact operator-approved Jira base URLs', () => {
+    expect(assertAllowedJiraBaseUrl('https://example.atlassian.net/')).toBe(
+      'https://example.atlassian.net'
+    );
+    expect(
+      assertAllowedJiraBaseUrl('https://jira.example/', {
+        JIRA_ALLOWED_BASE_URLS: 'https://jira.example',
+      })
+    ).toBe('https://jira.example');
+  });
+
+  test('rejects arbitrary, credentialed, and non-exact Jira URLs', () => {
+    expect(() => assertAllowedJiraBaseUrl('http://127.0.0.1:8080')).toThrow('not allowed');
+    expect(() => assertAllowedJiraBaseUrl('https://attacker.example')).toThrow('not allowed');
+    expect(() =>
+      assertAllowedJiraBaseUrl('https://jira.example/other', {
+        JIRA_ALLOWED_BASE_URLS: 'https://jira.example',
+      })
+    ).toThrow('not allowed');
+    expect(() => assertAllowedJiraBaseUrl('https://user:pass@example.atlassian.net')).toThrow(
+      'must not contain credentials'
+    );
+  });
+
   test('credentials are environment-only and require both values', () => {
     expect(
       jiraCredentialsFromEnv({ JIRA_EMAIL: 'me@example.com', JIRA_API_TOKEN: 'secret' })

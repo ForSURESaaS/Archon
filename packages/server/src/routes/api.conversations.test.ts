@@ -1,5 +1,5 @@
 import { describe, test, expect, mock } from 'bun:test';
-import { readFile } from 'fs/promises';
+import { readFile, stat } from 'fs/promises';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import type { ConversationLockManager } from '@archon/core';
 import { removeTempTree } from '@archon/paths/test-utils';
@@ -150,6 +150,10 @@ describe('POST /api/conversations/:id/handoff', () => {
       const body = (await response.json()) as { path: string; messageCount: number };
       expect(body.messageCount).toBe(2);
       expect(body.path).toStartWith('/tmp/.archon-conversation-handoff-test/handoffs/');
+      expect((await stat('/tmp/.archon-conversation-handoff-test/handoffs')).mode & 0o777).toBe(
+        0o700
+      );
+      expect((await stat(body.path)).mode & 0o777).toBe(0o600);
       const markdown = await readFile(body.path, 'utf-8');
       expect(markdown).toContain('# Chat handoff: Migration chat');
       expect(markdown).toContain('## User · 2026-09-26T08:00:00.000Z');

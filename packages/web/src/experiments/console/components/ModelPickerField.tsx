@@ -14,6 +14,7 @@ import {
   usablePiBackends,
   type ModelOption,
 } from '../lib/model-options';
+import { joinPiModelRef, piBackendLabel, splitPiModelRef } from '../lib/model-ref';
 import { useCancelledRef } from '../lib/use-cancelled-ref';
 import { INPUT_CLASS, SELECT_CLASS, SelectShell } from './SettingsFormPrimitives';
 
@@ -53,6 +54,8 @@ interface ModelPickerFieldProps {
   agents?: AgentCredentials[];
   /** Pi catalog (K.piModels) — best-effort, undefined/[] means no Pi suggestions. */
   piModels?: PiModelInfo[];
+  /** Pi-only backend filter. ModelCombobox receives/returns the model id without this prefix. */
+  piBackend?: string;
 }
 
 /**
@@ -74,10 +77,113 @@ interface ModelPickerFieldProps {
  * on a disconnected backend only draws a non-blocking inline hint.
  */
 export function ModelPickerField(props: ModelPickerFieldProps): ReactElement {
+  if (modelPickerShape(props.agentId) === 'pi') {
+    return <PiModelPicker {...props} />;
+  }
   if (modelPickerShape(props.agentId) === 'select') {
     return <CopilotModelSelect {...props} />;
   }
   return <ModelCombobox {...props} />;
+}
+
+const CUSTOM_BACKEND = '__custom_backend__';
+
+/**
+ * Pi model refs encode two independent choices as `backend/model`. Surface
+ * those choices separately so changing Azure/OpenRouter/etc. never requires
+ * editing config.yaml or knowing the ref syntax. Unknown models and custom
+ * models.json backends remain available through free text.
+ */
+function PiModelPicker({
+  value,
+  onChange,
+  disabled = false,
+  className = '',
+  piModels,
+  ...props
+}: ModelPickerFieldProps): ReactElement {
+  const { backend: savedBackend, model: modelId } = splitPiModelRef(value);
+  const catalogBackends = [
+    ...new Set([
+      ...(savedBackend === '' ? [] : [savedBackend]),
+      ...(piModels ?? []).map(model => model.provider),
+    ]),
+  ].sort();
+  const [customBackend, setCustomBackend] = useState(false);
+  const backend = savedBackend;
+
+  const setBackend = (next: string): void => {
+    if (next === CUSTOM_BACKEND) {
+      setCustomBackend(true);
+      onChange('');
+      return;
+    }
+    setCustomBackend(false);
+    onChange(next === '' ? '' : joinPiModelRef(next, ''));
+  };
+
+  return (
+    <span className={`inline-flex min-w-0 flex-1 flex-wrap items-start gap-2 ${className}`}>
+      {customBackend ? (
+        <span className="inline-flex w-[190px] shrink-0 items-center gap-2">
+          <input
+            value={backend}
+            onChange={event => {
+              const next = event.target.value.trim();
+              onChange(next === '' ? '' : joinPiModelRef(next, modelId));
+            }}
+            disabled={disabled}
+            placeholder="backend id"
+            aria-label={`${props.ariaLabel ?? 'Model'} backend`}
+            className={`${INPUT_CLASS} min-w-0 flex-1 ${disabled ? 'opacity-50' : ''}`}
+          />
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              setCustomBackend(false);
+              onChange('');
+            }}
+            className="rounded border border-border px-2 py-1.5 font-mono text-[11px] text-text-secondary hover:text-text-primary disabled:opacity-40"
+          >
+            List
+          </button>
+        </span>
+      ) : (
+        <SelectShell className="w-[190px] shrink-0">
+          <select
+            value={backend}
+            onChange={event => {
+              setBackend(event.target.value);
+            }}
+            disabled={disabled}
+            aria-label={`${props.ariaLabel ?? 'Model'} backend`}
+            className={`${SELECT_CLASS} ${disabled ? 'opacity-50' : ''}`}
+          >
+            <option value="">Select API provider…</option>
+            {catalogBackends.map(id => (
+              <option key={id} value={id}>
+                {piBackendLabel(id)}
+              </option>
+            ))}
+            <option value={CUSTOM_BACKEND}>Custom backend…</option>
+          </select>
+        </SelectShell>
+      )}
+      <ModelCombobox
+        {...props}
+        agentId="pi"
+        value={modelId}
+        onChange={next => {
+          onChange(joinPiModelRef(backend, next));
+        }}
+        disabled={disabled || backend === ''}
+        className="min-w-[180px] flex-1"
+        piModels={piModels}
+        piBackend={backend}
+      />
+    </span>
+  );
 }
 
 /** Suggestion row; `onMouseDown` is prevented by the list container so the input never blurs. */
@@ -114,6 +220,7 @@ function ModelCombobox({
   className = '',
   agents,
   piModels,
+  piBackend,
 }: ModelPickerFieldProps): ReactElement {
   const [open, setOpen] = useState(false);
   // Pi only: include backends without a usable credential in the suggestions.
@@ -153,12 +260,24 @@ function ModelCombobox({
   };
 
   // Suggestions per shape; the field's text doubles as the search query.
-  const backends = shape === 'pi' ? usablePiBackends(agents) : null;
+  const scopedPiModels =
+    shape === 'pi' && piBackend
+      ? piModels?.filter(model => model.provider === piBackend)
+      : piModels;
+  const backends = shape === 'pi' && !piBackend ? usablePiBackends(agents) : null;
   const pi =
-    shape === 'pi' ? piModelOptions(piModels, value, backends, showAll, PI_SUGGESTION_LIMIT) : null;
+    shape === 'pi'
+      ? piModelOptions(scopedPiModels, value, backends, showAll, PI_SUGGESTION_LIMIT)
+      : null;
   let options: ModelOption[];
   if (pi !== null) {
-    options = pi.options;
+    options = pi.options.map(option => ({
+      ...option,
+      value:
+        piBackend && option.value.startsWith(`${piBackend}/`)
+          ? option.value.slice(piBackend.length + 1)
+          : option.value,
+    }));
   } else if (shape === 'opencode') {
     options =
       ocPhase === 'loaded' ? filterModelOptions(opencodeBackendOptions(ocProviders), value) : [];
@@ -173,9 +292,10 @@ function ModelCombobox({
   };
 
   // Under-field hints (outside the dropdown, so they show while typing too).
-  const exactPi = shape === 'pi' ? findPiModel(piModels, value) : undefined;
+  const fullPiRef = piBackend && value ? `${piBackend}/${value}` : value;
+  const exactPi = shape === 'pi' ? findPiModel(piModels, fullPiRef) : undefined;
   const disconnectedHint =
-    shape === 'pi' && !disabled ? piDisconnectedBackendHint(value, agents) : null;
+    shape === 'pi' && !disabled ? piDisconnectedBackendHint(fullPiRef, agents) : null;
 
   const hasDropdownContent = options.length > 0 || shape === 'pi' || shape === 'opencode';
 
@@ -236,7 +356,7 @@ function ModelCombobox({
                   No catalog match — custom models.json refs are fine as free text.
                 </p>
               ) : null}
-              {backends !== null ? (
+              {backends !== null && !piBackend ? (
                 <button
                   type="button"
                   onClick={() => {

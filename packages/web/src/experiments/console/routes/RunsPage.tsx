@@ -7,8 +7,9 @@ import { FilterChips, type Filter } from '../components/FilterChips';
 import { ProjectViewTabs } from '../components/ProjectViewTabs';
 import { DraftRunCard } from '../components/DraftRunCard';
 import { PendingInputBanner } from '../components/PendingInputBanner';
-import { useEntity } from '../store/cache';
+import { invalidate, useEntity } from '../store/cache';
 import { K, type Scope } from '../store/keys';
+import { useBackgroundRefresh } from '../lib/background-refresh';
 import { useDashboardSSE } from '../lib/sse';
 import { useKeymap, type Binding } from '../lib/keymap';
 import * as skill from '../skills';
@@ -303,6 +304,11 @@ export function RunsPage(): ReactElement {
   // dag_node event invalidates the active runs:* cache keys, triggering a
   // refetch through useEntity. Replaces the 3s polling loop.
   useDashboardSSE();
+  // SSE is the fast path, but reconnects can miss events after sleep/network
+  // changes. Keep the visible feed fresh and refresh immediately on tab return.
+  useBackgroundRefresh(() => {
+    invalidate(K.runs(scope));
+  }, 10_000);
 
   // Scoped project (drives the DraftRunCard inside the feed when not ALL).
   // Typed as `Project | null` rather than `Project` so the ALL scope can

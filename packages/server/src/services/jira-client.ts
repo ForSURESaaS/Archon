@@ -23,6 +23,7 @@ export interface JiraRelatedIssue {
 export interface JiraIssue {
   id: string;
   key: string;
+  projectKey: string;
   summary: string;
   description: string;
   status: string;
@@ -50,7 +51,7 @@ interface JiraPage<T> {
   nextPageToken?: string;
 }
 
-interface JiraTransition {
+export interface JiraTransition {
   id: string;
   name: string;
   to?: { name?: string };
@@ -84,6 +85,37 @@ export function jiraCredentialsFromEnv(
   const apiToken = env.JIRA_API_TOKEN?.trim();
   if (!apiToken) return null;
   return { email: env.JIRA_EMAIL?.trim() || null, apiToken };
+}
+
+/**
+ * Credentials may only be sent to Atlassian Cloud or an operator-approved
+ * self-hosted Jira base URL. Exact allowlisting prevents a caller who can edit
+ * queue configuration from turning the shared Jira token into an SSRF primitive.
+ */
+export function assertAllowedJiraBaseUrl(
+  value: string,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const normalized = value.trim().replace(/\/+$/, '');
+  const url = new URL(normalized);
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('Jira URL must not contain credentials, a query, or a fragment.');
+  }
+
+  const isAtlassianCloud =
+    url.protocol === 'https:' &&
+    (url.pathname === '' || url.pathname === '/') &&
+    url.hostname.toLowerCase().endsWith('.atlassian.net');
+  const allowed = (env.JIRA_ALLOWED_BASE_URLS ?? '')
+    .split(',')
+    .map(item => item.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+  if (!isAtlassianCloud && !allowed.includes(normalized)) {
+    throw new Error(
+      'Jira URL is not allowed. Use an https://*.atlassian.net site or add the exact base URL to JIRA_ALLOWED_BASE_URLS.'
+    );
+  }
+  return normalized;
 }
 
 function canonicalJson(value: unknown): string {
@@ -130,7 +162,7 @@ export class JiraClient {
   private useBearer = false;
 
   constructor(url: string, credentials: JiraCredentials) {
-    this.siteUrl = url.trim().replace(/\/+$/, '');
+    this.siteUrl = assertAllowedJiraBaseUrl(url);
     this.apiUrl = this.siteUrl;
     this.basicAuth = credentials.email
       ? `Basic ${Buffer.from(`${credentials.email}:${credentials.apiToken}`).toString('base64')}`
@@ -364,6 +396,12 @@ export class JiraClient {
     return {
       id: typeof raw.id === 'string' || typeof raw.id === 'number' ? String(raw.id) : '',
       key,
+      projectKey:
+        fields.project !== null &&
+        typeof fields.project === 'object' &&
+        typeof (fields.project as { key?: unknown }).key === 'string'
+          ? (fields.project as { key: string }).key
+          : '',
       summary: typeof fields.summary === 'string' ? fields.summary : '',
       description: adfText(fields.description),
       status: readName(fields.status),
@@ -408,10 +446,8 @@ export class JiraClient {
   }
 
   async transitionIssue(issueKey: string, destinationStatus: string): Promise<void> {
-    const response = await this.request<{ transitions?: JiraTransition[] }>(
-      `/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions?expand=transitions.fields`
-    );
-    const matches = (response.transitions ?? []).filter(
+    const transitions = await this.listTransitions(issueKey);
+    const matches = transitions.filter(
       transition =>
         transition.to?.name?.toLowerCase() === destinationStatus.toLowerCase() ||
         transition.name.toLowerCase() === destinationStatus.toLowerCase()
@@ -443,6 +479,23 @@ export class JiraClient {
     await this.request<unknown>(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, {
       method: 'POST',
       body: JSON.stringify({ transition: { id: selected.id } }),
+    });
+  }
+
+  async listTransitions(issueKey: string): Promise<JiraTransition[]> {
+    const response = await this.request<{ transitions?: JiraTransition[] }>(
+      `/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions?expand=transitions.fields`
+    );
+    return response.transitions ?? [];
+  }
+
+  async transitionIssueById(issueKey: string, transitionId: string): Promise<void> {
+    const transitions = await this.listTransitions(issueKey);
+    const selected = transitions.find(transition => transition.id === transitionId);
+    if (!selected) throw new Error(`Jira transition '${transitionId}' is not currently available`);
+    await this.request<unknown>(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, {
+      method: 'POST',
+      body: JSON.stringify({ transition: { id: transitionId } }),
     });
   }
 

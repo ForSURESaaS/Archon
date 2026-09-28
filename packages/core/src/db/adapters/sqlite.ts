@@ -668,6 +668,29 @@ export class SqliteAdapter implements IDatabase {
         applied_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
 
+      CREATE TABLE IF NOT EXISTS remote_agent_spend_config (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        daily_limit_usd REAL
+      );
+
+      CREATE TABLE IF NOT EXISTS remote_agent_daily_spend_credits (
+        id TEXT PRIMARY KEY,
+        day_utc TEXT NOT NULL,
+        amount_usd REAL NOT NULL CHECK (amount_usd > 0),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_daily_spend_credits_day
+        ON remote_agent_daily_spend_credits(day_utc);
+
+      CREATE TABLE IF NOT EXISTS remote_agent_ai_spend_entries (
+        id TEXT PRIMARY KEY,
+        day_utc TEXT NOT NULL,
+        amount_usd REAL NOT NULL CHECK (amount_usd >= 0),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_ai_spend_entries_day
+        ON remote_agent_ai_spend_entries(day_utc);
+
       -- Users table (Archon identity, platform-agnostic)
       CREATE TABLE IF NOT EXISTS remote_agent_users (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),

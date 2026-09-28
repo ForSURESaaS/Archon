@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactElement } from 'react';
+import { useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Link, useParams } from 'react-router';
 import { ProjectViewTabs } from '../components/ProjectViewTabs';
 import { useEntity } from '../store/cache';
@@ -17,6 +17,8 @@ const RANGE_MS: Record<Exclude<Range, 'all'>, number> = {
 
 const paid = (run: Run): run is Run & { costUsd: number } =>
   typeof run.costUsd === 'number' && Number.isFinite(run.costUsd);
+const tokenValue = (value: number | null): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : 0;
 
 export function selectCostRuns(
   data: Run[],
@@ -30,15 +32,62 @@ export function selectCostRuns(
   return { requests, metered, unmeteredCount: requests.length - metered.length };
 }
 
+export function aggregateTokenUsage(runs: Run[]): {
+  tokensIn: number;
+  tokensOut: number;
+  cacheRead: number;
+} {
+  return {
+    tokensIn: runs.reduce((sum, run) => sum + tokenValue(run.tokensIn), 0),
+    tokensOut: runs.reduce((sum, run) => sum + tokenValue(run.tokensOut), 0),
+    cacheRead: runs.reduce((sum, run) => sum + tokenValue(run.cacheReadTokens), 0),
+  };
+}
+
 function formatTokens(value: number): string {
   return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(
     value
   );
 }
 
+function modelBreakdownTitle(
+  costs: readonly { model: string; costUsd: number; calls: number }[],
+  total: number
+): string {
+  const attributed = costs.reduce((sum, item) => sum + item.costUsd, 0);
+  return [
+    ...costs
+      .slice()
+      .sort((a, b) => b.costUsd - a.costUsd)
+      .map(
+        item =>
+          `${item.model}: ${formatCost(item.costUsd)} across ${String(item.calls)} call${item.calls === 1 ? '' : 's'}`
+      ),
+    ...(total - attributed > 0.000001
+      ? [`Unattributed/provider roll-up: ${formatCost(total - attributed)}`]
+      : []),
+  ].join('\n');
+}
+
 export function CostsPage(): ReactElement {
   const { projectId = '' } = useParams<{ projectId: string }>();
   const [range, setRange] = useState<Range>('30d');
+  const [budget, setBudget] = useState<skill.DailyBudgetStatus | null>(null);
+  const [limitInput, setLimitInput] = useState('');
+  const [creditInput, setCreditInput] = useState('');
+  const [budgetError, setBudgetError] = useState<string | null>(null);
+  const [budgetSaving, setBudgetSaving] = useState(false);
+  useEffect(() => {
+    void skill
+      .getDailyBudget()
+      .then(status => {
+        setBudget(status);
+        setLimitInput(status.limitUsd === null ? '' : String(status.limitUsd));
+      })
+      .catch((reason: unknown) => {
+        setBudgetError(reason instanceof Error ? reason.message : 'Failed to load daily budget');
+      });
+  }, []);
   const after = range === 'all' ? undefined : new Date(Date.now() - RANGE_MS[range]).toISOString();
   const { data, loading, error } = useEntity<Run[]>(`${K.costs(projectId)}:${range}`, () =>
     skill.listCostRuns(projectId, after)
@@ -53,9 +102,9 @@ export function CostsPage(): ReactElement {
   const unmeteredCount = requests.length - runs.length;
   const total = runs.reduce((sum, run) => sum + (run.costUsd ?? 0), 0);
   const average = runs.length > 0 ? total / runs.length : 0;
-  const tokensIn = runs.reduce((sum, run) => sum + (run.tokensIn ?? 0), 0);
-  const tokensOut = runs.reduce((sum, run) => sum + (run.tokensOut ?? 0), 0);
-  const cacheRead = runs.reduce((sum, run) => sum + (run.cacheReadTokens ?? 0), 0);
+  // Token telemetry is independent of USD cost availability. Pi and Codex can
+  // report usage without reporting a price, so include every top-level request.
+  const { tokensIn, tokensOut, cacheRead } = aggregateTokenUsage(requests);
   const cacheBase = tokensIn + cacheRead;
   const cacheRate = cacheBase > 0 ? cacheRead / cacheBase : null;
   const completed = runs.filter(run => run.status === 'completed').length;
@@ -73,6 +122,21 @@ export function CostsPage(): ReactElement {
       .sort((a, b) => b.cost - a.cost);
   }, [runs]);
   const maxWorkflowCost = Math.max(0, ...byWorkflow.map(item => item.cost));
+  const byModel = useMemo(() => {
+    const groups = new Map<string, { costUsd: number; calls: number }>();
+    for (const run of runs) {
+      for (const item of run.modelCosts ?? []) {
+        const prior = groups.get(item.model) ?? { costUsd: 0, calls: 0 };
+        groups.set(item.model, {
+          costUsd: prior.costUsd + item.costUsd,
+          calls: prior.calls + item.calls,
+        });
+      }
+    }
+    return [...groups.entries()]
+      .map(([model, value]) => ({ model, ...value }))
+      .sort((a, b) => b.costUsd - a.costUsd);
+  }, [runs]);
   const dailySpend = useMemo(() => {
     const groups = new Map<string, number>();
     for (const run of runs) {
@@ -138,6 +202,121 @@ export function CostsPage(): ReactElement {
               </p>
             ) : null}
 
+            <section className="rounded-xl border border-border bg-surface p-4">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-sm font-semibold">Daily AI budget</h2>
+                  <p className="mt-1 text-xs text-text-tertiary">
+                    Installation-wide UTC day. New model calls stop at the limit; an in-flight call
+                    may finish slightly above it.
+                  </p>
+                </div>
+                {budget ? (
+                  <div className="text-right font-mono text-sm tabular-nums">
+                    <div className={budget.exhausted ? 'text-error' : 'text-success'}>
+                      {formatCost(budget.spentUsd)} spent
+                    </div>
+                    <div className="text-xs text-text-secondary">
+                      {budget.limitUsd === null
+                        ? 'No limit'
+                        : `${formatCost(budget.remainingUsd ?? 0)} remaining · ${formatCost(
+                            budget.limitUsd + budget.creditUsd
+                          )} available`}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+              <div className="mt-4 flex flex-wrap items-end gap-3">
+                <label className="grid gap-1 text-xs text-text-secondary">
+                  Base limit (USD/day)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={limitInput}
+                    onChange={event => {
+                      setLimitInput(event.target.value);
+                    }}
+                    placeholder="Blank = unlimited"
+                    className="w-44 rounded border border-border bg-surface-elevated px-2.5 py-1.5 font-mono text-text-primary"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={budgetSaving}
+                  onClick={() => {
+                    const value = limitInput.trim() === '' ? null : Number(limitInput);
+                    if (value !== null && (!Number.isFinite(value) || value < 0)) {
+                      setBudgetError('Enter a non-negative daily limit.');
+                      return;
+                    }
+                    setBudgetSaving(true);
+                    setBudgetError(null);
+                    void skill
+                      .setDailyBudget(value)
+                      .then(setBudget)
+                      .catch((reason: unknown) => {
+                        setBudgetError(reason instanceof Error ? reason.message : 'Update failed');
+                      })
+                      .finally(() => {
+                        setBudgetSaving(false);
+                      });
+                  }}
+                  className="rounded bg-accent px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                >
+                  Save limit
+                </button>
+                <label className="grid gap-1 text-xs text-text-secondary">
+                  Add credit for {budget?.dayUtc ?? 'today'} (USD)
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={creditInput}
+                    onChange={event => {
+                      setCreditInput(event.target.value);
+                    }}
+                    placeholder="10.00"
+                    className="w-44 rounded border border-border bg-surface-elevated px-2.5 py-1.5 font-mono text-text-primary"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={budgetSaving}
+                  onClick={() => {
+                    const value = Number(creditInput);
+                    if (!Number.isFinite(value) || value <= 0) {
+                      setBudgetError('Enter a positive credit amount.');
+                      return;
+                    }
+                    setBudgetSaving(true);
+                    setBudgetError(null);
+                    void skill
+                      .addDailyBudgetCredit(value)
+                      .then(status => {
+                        setBudget(status);
+                        setCreditInput('');
+                      })
+                      .catch((reason: unknown) => {
+                        setBudgetError(reason instanceof Error ? reason.message : 'Top-up failed');
+                      })
+                      .finally(() => {
+                        setBudgetSaving(false);
+                      });
+                  }}
+                  className="rounded border border-accent px-3 py-1.5 text-xs font-semibold text-accent disabled:opacity-50"
+                >
+                  Add today’s credit
+                </button>
+              </div>
+              {budget?.creditUsd ? (
+                <p className="mt-2 text-xs text-text-tertiary">
+                  Today’s manual credits: {formatCost(budget.creditUsd)}
+                </p>
+              ) : null}
+              {budgetError ? <p className="mt-2 text-xs text-error">{budgetError}</p> : null}
+            </section>
+
             <section className="grid gap-3 sm:grid-cols-3">
               {[
                 ['Input tokens', formatTokens(tokensIn)],
@@ -149,6 +328,33 @@ export function CostsPage(): ReactElement {
                   <div className="mt-1 font-mono text-lg font-semibold tabular-nums">{value}</div>
                 </div>
               ))}
+            </section>
+
+            <section className="rounded-xl border border-border bg-surface p-4">
+              <h2 className="mb-4 text-sm font-semibold">Spend by model</h2>
+              {byModel.length > 0 ? (
+                <div className="grid gap-2" title={modelBreakdownTitle(byModel, total)}>
+                  {byModel.map(item => (
+                    <div
+                      key={item.model}
+                      className="flex items-center justify-between gap-3 text-xs"
+                    >
+                      <span className="truncate font-mono">{item.model}</span>
+                      <span className="font-mono tabular-nums text-text-secondary">
+                        {formatCost(item.costUsd)} · {item.calls} call
+                        {item.calls === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                  ))}
+                  <span className="text-xs text-text-tertiary">
+                    Hover for the complete per-model price breakdown.
+                  </span>
+                </div>
+              ) : (
+                <span className="text-sm text-text-secondary">
+                  No per-model telemetry in this range.
+                </span>
+              )}
             </section>
 
             <section className="rounded-xl border border-border bg-surface p-4">
@@ -240,7 +446,10 @@ export function CostsPage(): ReactElement {
                         <span className="text-right font-mono text-text-secondary">
                           {formatTokens((run.tokensIn ?? 0) + (run.tokensOut ?? 0))}
                         </span>
-                        <span className="text-right font-mono font-semibold tabular-nums">
+                        <span
+                          className="text-right font-mono font-semibold tabular-nums"
+                          title={modelBreakdownTitle(run.modelCosts ?? [], run.costUsd ?? 0)}
+                        >
                           {formatCost(run.costUsd ?? 0)}
                         </span>
                         <span className="sr-only">{shortRunId(run.id)}</span>

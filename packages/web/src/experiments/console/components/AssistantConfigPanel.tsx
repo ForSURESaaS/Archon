@@ -39,7 +39,7 @@ function seedForm(config: SafeConfig, providers: ProviderInfo[]): AssistantConfi
 }
 
 /**
- * Editor for the global default assistant + per-provider model (and Codex
+ * Editor for the global default execution agent + per-agent model (and Codex
  * reasoning/web-search). The model field is agent-aware (ModelPickerField,
  * #1957) but never blocks free text — Archon does not validate model strings
  * (the SDK is the source of truth and ships models faster than we can
@@ -165,7 +165,7 @@ export function AssistantConfigPanel(): ReactElement {
           by the panel's Save button. */}
       <label className="mb-5 flex flex-wrap items-center gap-[18px]">
         <span className="w-[150px] shrink-0 text-[13.5px] font-semibold text-text-secondary">
-          Chat runs on{' '}
+          Default chat agent{' '}
           <span className="font-mono text-[10px] font-bold uppercase tracking-[0.06em] text-text-tertiary">
             this install
           </span>
@@ -180,7 +180,7 @@ export function AssistantConfigPanel(): ReactElement {
           >
             {providers.map(p => (
               <option key={p.id} value={p.id}>
-                {p.displayName}
+                {p.displayName} agent
               </option>
             ))}
           </select>
@@ -205,7 +205,7 @@ export function AssistantConfigPanel(): ReactElement {
       {userScopeAvailable && userDraft !== null ? (
         <div className="mb-5 flex flex-wrap items-center gap-[18px]">
           <span className="w-[150px] shrink-0 text-[13.5px] font-semibold text-text-secondary">
-            Chat runs on{' '}
+            My chat agent{' '}
             <span className="font-mono text-[10px] font-bold uppercase tracking-[0.06em] text-text-tertiary">
               just me
             </span>
@@ -226,7 +226,7 @@ export function AssistantConfigPanel(): ReactElement {
               <option value="">Inherit (this install)</option>
               {providers.map(p => (
                 <option key={p.id} value={p.id}>
-                  {p.displayName}
+                  {p.displayName} agent
                 </option>
               ))}
             </select>

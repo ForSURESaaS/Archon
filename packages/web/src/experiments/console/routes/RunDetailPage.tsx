@@ -1,12 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactElement,
-} from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { useKeymap, type Binding } from '../lib/keymap';
 import { RunDetailHeader } from '../components/RunDetailHeader';
@@ -18,6 +10,7 @@ import { ApprovalPanel } from '../components/ApprovalPanel';
 import { RunGraphPanel } from '../components/RunGraphPanel';
 import { ArtifactPanel } from '../components/ArtifactPanel';
 import { RunStartedLine, RunFinishedLine } from '../components/RunLifecycle';
+import { useBackgroundRefresh } from '../lib/background-refresh';
 import { StreamContextProvider } from '../lib/stream-context';
 import { useRunStreamSSE } from '../lib/sse';
 import { useEntity, invalidate } from '../store/cache';
@@ -188,19 +181,17 @@ export function RunDetailPage(): ReactElement {
   // while status is non-terminal catches that without being polling proper —
   // it stops the moment the run hits a terminal state.
   const status = detail?.run.status;
-  useEffect(() => {
-    if (runId === undefined) return;
-    if (status !== 'running' && status !== 'paused') return;
-    const id = setInterval(() => {
+  useBackgroundRefresh(
+    () => {
+      if (runId === undefined) return;
       invalidate(K.run(runId));
       if (conversationPlatformId !== null) {
         invalidate(K.messages(conversationPlatformId));
       }
-    }, 30000);
-    return (): void => {
-      clearInterval(id);
-    };
-  }, [runId, status, conversationPlatformId]);
+    },
+    10_000,
+    runId !== undefined && (status === 'running' || status === 'paused')
+  );
 
   // Surface the artifact count on the tab even when the user hasn't visited
   // the panel yet. Cheap call — the server walks one directory. Must live

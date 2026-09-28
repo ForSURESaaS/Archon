@@ -20,6 +20,7 @@ import type {
 } from '@archon/providers';
 import { loadProviderConcurrencyCaps } from '../config/provider-concurrency';
 import { releaseProviderAttempt, tryAdmitProviderAttempt } from '../db/provider-attempts';
+import { assertDailyBudgetAvailable, recordAiSpend } from '../db/daily-budget';
 
 let cachedLog: ReturnType<typeof createLogger> | undefined;
 function getLog(): ReturnType<typeof createLogger> {
@@ -137,14 +138,30 @@ async function* admittedQuery(
   resumeSessionId: string | undefined,
   options: SendQueryOptions | undefined
 ): AsyncGenerator<MessageChunk> {
+  await assertDailyBudgetAvailable();
   const slot = new ProviderSlot(id, options, pollMs);
+  const track = async function* (
+    stream: AsyncIterable<MessageChunk>
+  ): AsyncGenerator<MessageChunk> {
+    for await (const message of stream) {
+      if (
+        message.type === 'result' &&
+        typeof message.cost === 'number' &&
+        Number.isFinite(message.cost) &&
+        message.cost >= 0
+      ) {
+        await recordAiSpend(message.cost);
+      }
+      yield message;
+    }
+  };
   if (!(await slot.acquire())) {
-    yield* provider.sendQuery(prompt, cwd, resumeSessionId, options);
+    yield* track(provider.sendQuery(prompt, cwd, resumeSessionId, options));
     return;
   }
   let failed = false;
   try {
-    yield* provider.sendQuery(prompt, cwd, resumeSessionId, { ...options, admission: slot });
+    yield* track(provider.sendQuery(prompt, cwd, resumeSessionId, { ...options, admission: slot }));
   } catch (error) {
     failed = true;
     // The attempt's own error is what the caller needs. A release failure here is

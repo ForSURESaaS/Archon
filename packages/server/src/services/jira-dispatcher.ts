@@ -170,6 +170,12 @@ async function transitionIssueThrough(
   intermediateStatuses: readonly string[],
   destinationStatus: string
 ): Promise<void> {
+  try {
+    await client.transitionIssue(issueKey, destinationStatus);
+    return;
+  } catch (directError) {
+    if (intermediateStatuses.length === 0) throw directError;
+  }
   for (const status of [...intermediateStatuses, destinationStatus]) {
     await client.transitionIssue(issueKey, status);
   }
@@ -189,6 +195,16 @@ interface PullRequestSearchResult {
   number: number;
   url: string;
   repository: { nameWithOwner: string };
+}
+
+interface PullRequestCompletion {
+  title: string;
+  body: string;
+  mergedAt: string | null;
+  mergeCommit: { oid: string } | null;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
 }
 
 function parsePullRequestUrl(value: string): { repository: string; number: number } {
@@ -233,11 +249,8 @@ async function ghJson<T>(args: string[]): Promise<T> {
   return JSON.parse(stdout) as T;
 }
 
-async function upsertPullRequestCostComment(
-  prUrl: string,
-  job: jiraQueueDb.JiraJobRecord
-): Promise<void> {
-  const attached = await jiraQueueDb.listJiraJobRuns(job.id);
+async function totalJobCost(jobId: string): Promise<number | null> {
+  const attached = await jiraQueueDb.listJiraJobRuns(jobId);
   let total = 0;
   let found = false;
   for (const attachment of attached) {
@@ -248,7 +261,15 @@ async function upsertPullRequestCostComment(
       found = true;
     }
   }
-  if (!found) return;
+  return found ? total : null;
+}
+
+async function upsertPullRequestCostComment(
+  prUrl: string,
+  job: jiraQueueDb.JiraJobRecord
+): Promise<void> {
+  const total = await totalJobCost(job.id);
+  if (total === null) return;
   const { repository, number } = parsePullRequestUrl(prUrl);
   const marker = `<!-- archon-jira-job-cost:${job.id} -->`;
   const body = `that change costed ${total.toFixed(2)} dollars\n\n${marker}`;
@@ -556,9 +577,82 @@ export class JiraDispatcher {
     return this.processPullRequestComments(job);
   }
 
+  private async reconcileMergedPullRequest(job: jiraQueueDb.JiraJobRecord): Promise<boolean> {
+    if (!job.prUrl || job.status !== 'succeeded') return false;
+    if (job.metadata.mergeReconciledAt !== undefined) return true;
+
+    const { repository, number } = parsePullRequestUrl(job.prUrl);
+    const pullRequest = await ghJson<PullRequestCompletion>([
+      'pr',
+      'view',
+      number.toString(),
+      '--repo',
+      repository,
+      '--json',
+      'title,body,mergedAt,mergeCommit,additions,deletions,changedFiles',
+    ]);
+    if (!pullRequest.mergedAt) return false;
+
+    const config = await jiraQueueDb.getJiraConfig(job.codebaseId);
+    const credentials = jiraCredentialsFromEnv();
+    if (!config || !credentials) {
+      throw new Error('Jira configuration or credentials are unavailable.');
+    }
+    const client = new JiraClient(config.config.url, credentials);
+    const doneStatus =
+      config.config.workflow_states.done ?? config.config.workflow_states.terminal.at(-1) ?? 'DONE';
+    await transitionIssueThrough(
+      client,
+      job.issueKey,
+      config.config.workflow_states.done_via ?? [],
+      doneStatus
+    );
+
+    const cost = await totalJobCost(job.id);
+    const implementation =
+      pullRequest.body.trim() ||
+      (typeof job.metadata.summary === 'string' ? job.metadata.summary : pullRequest.title);
+    const report = [
+      `Archon detected that ${job.prUrl} was merged successfully.`,
+      `Merge commit: ${pullRequest.mergeCommit?.oid ?? 'not reported by GitHub'}`,
+      `Merged at: ${pullRequest.mergedAt}`,
+      `Cost: ${cost === null ? 'not available' : `$${cost.toFixed(2)}`}`,
+      `Change size: ${pullRequest.changedFiles.toString()} files, +${pullRequest.additions.toString()} / -${pullRequest.deletions.toString()}`,
+      '',
+      'What was done:',
+      implementation.slice(0, 12_000),
+      '',
+      'Root cause / rationale:',
+      typeof job.metadata.summary === 'string'
+        ? job.metadata.summary
+        : 'No separate root-cause statement was produced; see the Jira contract and pull request description.',
+      '',
+      `Jira moved to ${doneStatus}.`,
+    ].join('\n');
+    await client.addCommentOnce(
+      job.issueKey,
+      `[archon:merged:${job.id}:${pullRequest.mergeCommit?.oid ?? pullRequest.mergedAt}]`,
+      report
+    );
+    await jiraQueueDb.updateJiraJob(job.id, {
+      metadata: {
+        ...job.metadata,
+        mergeReconciledAt: new Date().toISOString(),
+        mergedAt: pullRequest.mergedAt,
+        mergeCommit: pullRequest.mergeCommit?.oid ?? null,
+        mergedCostUsd: cost,
+      },
+    });
+    this.snapshots.delete(job.codebaseId);
+    return true;
+  }
+
   async reconcileJob(codebaseId: string, jobId: string): Promise<jiraQueueDb.JiraJobRecord> {
     const job = await jiraQueueDb.getJiraJob(jobId);
     if (job?.codebaseId !== codebaseId) throw new Error('Jira job was not found.');
+    if (await this.reconcileMergedPullRequest(job)) {
+      return (await jiraQueueDb.getJiraJob(job.id)) ?? job;
+    }
     await jiraQueueDb.reconcileJiraJobRunLineage(job.id);
     await jiraQueueDb.updateJiraJob(job.id, {
       completionPending: true,
@@ -931,10 +1025,19 @@ export class JiraDispatcher {
       await this.monitorJobs();
       for (const job of await jiraQueueDb.listJiraJobsWithPullRequests()) {
         const config = await jiraQueueDb.getJiraConfig(job.codebaseId);
-        if (!config?.enabled) continue;
+        if (!config) continue;
         const interval = config.config.automation.poll_interval_seconds * 1000;
         if (Date.now() - (this.lastPrPoll.get(job.id) ?? 0) < interval) continue;
         this.lastPrPoll.set(job.id, Date.now());
+        const merged = await this.reconcileMergedPullRequest(job).catch(error => {
+          log.warn(
+            { err: error as Error, jobId: job.id, issueKey: job.issueKey },
+            'jira.merge_reconciliation_failed'
+          );
+          return false;
+        });
+        if (merged) continue;
+        if (!config.enabled) continue;
         await this.processPullRequestComments(job).catch(error => {
           log.warn(
             { err: error as Error, jobId: job.id, issueKey: job.issueKey },

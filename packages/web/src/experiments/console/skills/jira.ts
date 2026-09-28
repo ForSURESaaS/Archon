@@ -16,6 +16,8 @@ export interface JiraQueueConfig {
     claimed: string;
     ready_for_manual_test_via: string[];
     ready_for_manual_test: string;
+    done_via: string[];
+    done: string;
     terminal: string[];
   };
   automation: { poll_interval_seconds: number; concurrency: number };
@@ -35,6 +37,7 @@ export interface JiraConfigState {
 export interface JiraIssue {
   id: string;
   key: string;
+  projectKey: string;
   summary: string;
   description: string;
   status: string;
@@ -42,8 +45,12 @@ export interface JiraIssue {
   priority: string | null;
   labels: string[];
   updated: string;
+  version: string | number | null;
   url: string;
   sourceRevision: string;
+  parent: { key: string; summary: string; status: string; issueType: string } | null;
+  subtasks: { key: string; summary: string; status: string; issueType: string }[];
+  attachments: { id: string; filename: string; mimeType: string; size: number }[];
   job: {
     id: string;
     status: string;
@@ -61,6 +68,18 @@ export interface JiraQueueState {
   activeJobs: number;
   concurrency: number;
   lastError: string | null;
+}
+
+export interface JiraIssueDetailState {
+  issue: Omit<JiraIssue, 'job'>;
+  transitions: { id: string; name: string; destination: string }[];
+  costs: {
+    totalUsd: number;
+    attributedUsd: number;
+    unattributedUsd: number;
+    runCount: number;
+    byModel: { model: string; costUsd: number; calls: number }[];
+  } | null;
 }
 
 const base = (projectId: string): string => `/api/codebases/${encodeURIComponent(projectId)}/jira`;
@@ -88,6 +107,21 @@ export function setJiraEnabled(projectId: string, enabled: boolean): Promise<{ s
 
 export function getJiraIssues(projectId: string): Promise<JiraQueueState> {
   return requestJson(`${base(projectId)}/issues`);
+}
+
+export function getJiraIssue(projectId: string, issueKey: string): Promise<JiraIssueDetailState> {
+  return requestJson(`${base(projectId)}/issues/${encodeURIComponent(issueKey)}`);
+}
+
+export function transitionJiraIssue(
+  projectId: string,
+  issueKey: string,
+  transitionId: string
+): Promise<JiraIssueDetailState> {
+  return requestJson(`${base(projectId)}/issues/${encodeURIComponent(issueKey)}/transition`, {
+    method: 'POST',
+    body: JSON.stringify({ transitionId }),
+  });
 }
 
 export function dispatchJiraIssue(

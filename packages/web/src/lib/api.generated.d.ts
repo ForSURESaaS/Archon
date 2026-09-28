@@ -3316,9 +3316,122 @@ export interface paths {
             'application/json': components['schemas']['JiraConfigResponse'];
           };
         };
+        /** @description Jira URL is not permitted */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              error: string;
+            };
+          };
+        };
       };
     };
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/jira/issues/{key}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          key: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Jira issue detail and currently available transitions */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraIssueDetailResponse'];
+          };
+        };
+        /** @description Jira issue detail could not be loaded */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              error: string;
+            };
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/jira/issues/{key}/transition': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          key: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['JiraTransitionRequest'];
+        };
+      };
+      responses: {
+        /** @description Jira issue transitioned */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraIssueDetailResponse'];
+          };
+        };
+        /** @description Jira issue could not be transitioned */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              error: string;
+            };
+          };
+        };
+      };
+    };
     delete?: never;
     options?: never;
     head?: never;
@@ -3602,6 +3715,107 @@ export interface paths {
             'application/json': {
               error: string;
             };
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/budget/daily': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Current installation-wide UTC daily AI budget */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['DailyBudgetStatus'];
+          };
+        };
+      };
+    };
+    put: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          'application/json': {
+            limitUsd: number | null;
+          };
+        };
+      };
+      responses: {
+        /** @description Updated daily AI budget */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['DailyBudgetStatus'];
+          };
+        };
+      };
+    };
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/budget/daily/credits': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          'application/json': {
+            amountUsd: number;
+          };
+        };
+      };
+      responses: {
+        /** @description Daily credit added */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['DailyBudgetStatus'];
           };
         };
       };
@@ -5355,6 +5569,10 @@ export interface components {
         ready_for_manual_test_via: string[];
         /** @default DONE */
         ready_for_manual_test: string;
+        /** @default [] */
+        done_via: string[];
+        /** @default DONE */
+        done: string;
         /**
          * @default [
          *       "DONE"
@@ -5376,6 +5594,60 @@ export interface components {
       };
       /** @default archon-deliver */
       workflow: string;
+    };
+    JiraIssueDetailResponse: {
+      issue: {
+        id: string;
+        key: string;
+        projectKey: string;
+        summary: string;
+        description: string;
+        status: string;
+        issueType: string;
+        priority: string | null;
+        labels: string[];
+        updated: string;
+        version: string | number | unknown;
+        url: string;
+        sourceRevision: string;
+        parent: {
+          key: string;
+          summary: string;
+          status: string;
+          issueType: string;
+        } | null;
+        subtasks: {
+          key: string;
+          summary: string;
+          status: string;
+          issueType: string;
+        }[];
+        attachments: {
+          id: string;
+          filename: string;
+          mimeType: string;
+          size: number;
+        }[];
+      };
+      transitions: {
+        id: string;
+        name: string;
+        destination: string;
+      }[];
+      costs: {
+        totalUsd: number;
+        attributedUsd: number;
+        unattributedUsd: number;
+        runCount: number;
+        byModel: {
+          model: string;
+          costUsd: number;
+          calls: number;
+        }[];
+      } | null;
+    };
+    JiraTransitionRequest: {
+      transitionId: string;
     };
     JiraReconcileResponse: {
       jobId: string;
@@ -5404,6 +5676,7 @@ export interface components {
     JiraIssue: {
       id: string;
       key: string;
+      projectKey: string;
       summary: string;
       description: string;
       status: string;
@@ -5411,8 +5684,27 @@ export interface components {
       priority: string | null;
       labels: string[];
       updated: string;
+      version: string | number | unknown;
       url: string;
       sourceRevision: string;
+      parent: {
+        key: string;
+        summary: string;
+        status: string;
+        issueType: string;
+      } | null;
+      subtasks: {
+        key: string;
+        summary: string;
+        status: string;
+        issueType: string;
+      }[];
+      attachments: {
+        id: string;
+        filename: string;
+        mimeType: string;
+        size: number;
+      }[];
       job: {
         id: string;
         status: string;
@@ -5427,6 +5719,14 @@ export interface components {
       jobId: string;
       runId: string | null;
       status: string;
+    };
+    DailyBudgetStatus: {
+      dayUtc: string;
+      limitUsd: number | null;
+      creditUsd: number;
+      spentUsd: number;
+      remainingUsd: number | null;
+      exhausted: boolean;
     };
   };
   responses: never;

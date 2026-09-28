@@ -15,6 +15,7 @@ import { ProjectViewTabs } from '../components/ProjectViewTabs';
 import { WorkingIndicator } from '../components/WorkingIndicator';
 import { WorkflowDock } from '../components/WorkflowDock';
 import { EmptyState } from '../components/EmptyState';
+import { useBackgroundRefresh } from '../lib/background-refresh';
 import { StreamContextProvider } from '../lib/stream-context';
 import { useConversationSSE } from '../lib/sse';
 import { useEntity, invalidate } from '../store/cache';
@@ -146,19 +147,21 @@ export function ChatPage(): ReactElement {
   // dropped or absent SSE event can't hide the reply. Hard-caps at MAX_WAIT_MS.
   const busySinceRef = useRef(0);
   useEffect(() => {
-    if (!busy || activeConvId === null) return;
+    if (!busy) return;
     busySinceRef.current = Date.now();
-    const id = setInterval(() => {
+  }, [busy]);
+  useBackgroundRefresh(
+    () => {
+      if (activeConvId === null) return;
       if (Date.now() - busySinceRef.current > MAX_WAIT_MS) {
         setBusy(false);
         return;
       }
       invalidate(K.messages(activeConvId));
-    }, ACTIVE_POLL_MS);
-    return (): void => {
-      clearInterval(id);
-    };
-  }, [busy, activeConvId]);
+    },
+    ACTIVE_POLL_MS,
+    busy && activeConvId !== null
+  );
 
   // Reveal the raw tool trace inline (toggled from the working indicator).
   const [showTools, setShowTools] = useState(false);

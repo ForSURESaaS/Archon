@@ -1,15 +1,21 @@
-import { useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { Link, useParams } from 'react-router';
+import { ExternalLink } from 'lucide-react';
 import { ProjectViewTabs } from '../components/ProjectViewTabs';
+import { useBackgroundRefresh } from '../lib/background-refresh';
+import { formatCost } from '../lib/format';
 import { invalidate, useEntity } from '../store/cache';
 import * as skill from '../skills';
 
-const STATUSES = ['TO DO', 'IN PROGRESS', 'READY FOR TEST', 'DONE'] as const;
+const ACTIVE_STATUSES = ['TO DO', 'IN PROGRESS', 'MANUAL TEST'] as const;
+const ARCHIVE_STATUS = 'DEVELOPMENT DONE';
+const ARCHIVE_PAGE_SIZE = 20;
 
 function statusTone(status: string): string {
   if (status === 'IN PROGRESS') return 'border-running/40 bg-running-soft';
-  if (status === 'READY FOR TEST') return 'border-warning/40 bg-warning-soft';
-  if (status === 'DONE') return 'border-success/40 bg-success-soft';
+  if (status === 'MANUAL TEST') return 'border-warning/40 bg-warning-soft';
+  if (status === 'DEVELOPMENT DONE' || status === 'ON PRODUCTION')
+    return 'border-success/40 bg-success-soft';
   return 'border-border bg-surface-elevated';
 }
 
@@ -25,33 +31,62 @@ export function JiraPage(): ReactElement {
   );
   const [draft, setDraft] = useState<skill.JiraQueueConfig | null>(null);
   const [showConfig, setShowConfig] = useState(false);
+  const [view, setView] = useState<'active' | 'archive'>('active');
+  const [archiveLimit, setArchiveLimit] = useState(ARCHIVE_PAGE_SIZE);
+  const archiveSentinelRef = useRef<HTMLDivElement | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [prCheckMessage, setPrCheckMessage] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<{ issueKey: string; detail: string } | null>(null);
+  const [selectedIssue, setSelectedIssue] = useState<skill.JiraIssueDetailState | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [transitionBusy, setTransitionBusy] = useState(false);
+  const [completionArmed, setCompletionArmed] = useState<string | null>(null);
+  const [completionReady, setCompletionReady] = useState(false);
 
   useEffect(() => {
     if (configState.data && draft === null) setDraft(configState.data.config);
   }, [configState.data, draft]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      invalidate(queueKey);
-    }, 10_000);
-    return (): void => {
-      window.clearInterval(timer);
-    };
-  }, [queueKey]);
+  useBackgroundRefresh(() => {
+    invalidate(queueKey);
+  }, 10_000);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, skill.JiraIssue[]>();
-    for (const status of STATUSES) groups.set(status, []);
     for (const issue of queueState.data?.issues ?? []) {
       const status = issue.status.toUpperCase();
       groups.set(status, [...(groups.get(status) ?? []), issue]);
     }
     return groups;
   }, [queueState.data]);
+
+  const archivedIssues = useMemo(
+    () =>
+      (queueState.data?.issues ?? [])
+        .filter(issue => issue.status.toUpperCase() === ARCHIVE_STATUS)
+        .sort((a, b) => Date.parse(b.updated) - Date.parse(a.updated)),
+    [queueState.data]
+  );
+  const visibleArchivedIssues = archivedIssues.slice(0, archiveLimit);
+
+  useEffect(() => {
+    setArchiveLimit(ARCHIVE_PAGE_SIZE);
+  }, [projectId]);
+
+  useEffect(() => {
+    const sentinel = archiveSentinelRef.current;
+    if (view !== 'archive' || sentinel === null || archiveLimit >= archivedIssues.length) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setArchiveLimit(limit => Math.min(limit + ARCHIVE_PAGE_SIZE, archivedIssues.length));
+      }
+    });
+    observer.observe(sentinel);
+    return (): void => {
+      observer.disconnect();
+    };
+  }, [view, archiveLimit, archivedIssues.length]);
 
   const mutate = async (name: string, action: () => Promise<unknown>): Promise<void> => {
     setBusy(name);
@@ -67,6 +102,46 @@ export function JiraPage(): ReactElement {
       setBusy(null);
     }
   };
+
+  const openIssue = async (issueKey: string): Promise<void> => {
+    setDetailLoading(true);
+    setMessage(null);
+    try {
+      setSelectedIssue(await skill.getJiraIssue(projectId, issueKey));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const transitionIssue = async (issueKey: string, transitionId: string): Promise<void> => {
+    setTransitionBusy(true);
+    setMessage(null);
+    try {
+      setSelectedIssue(await skill.transitionJiraIssue(projectId, issueKey, transitionId));
+      invalidate(queueKey);
+      setCompletionArmed(null);
+      setCompletionReady(false);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTransitionBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (completionArmed === null) {
+      setCompletionReady(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setCompletionReady(true);
+    }, 2_000);
+    return (): void => {
+      window.clearTimeout(timer);
+    };
+  }, [completionArmed]);
 
   if (configState.error) {
     return <div className="p-6 text-error">{configState.error.message}</div>;
@@ -109,6 +184,24 @@ export function JiraPage(): ReactElement {
       </header>
 
       <main className="min-h-0 flex-1 overflow-auto p-4">
+        <div className="mb-4 flex gap-1 border-b border-border">
+          {(['active', 'archive'] as const).map(option => (
+            <button
+              key={option}
+              type="button"
+              className={`border-b-2 px-3 py-2 text-xs font-semibold uppercase tracking-wider ${
+                view === option
+                  ? 'border-accent text-text-primary'
+                  : 'border-transparent text-text-secondary hover:text-text-primary'
+              }`}
+              onClick={() => {
+                setView(option);
+              }}
+            >
+              {option === 'active' ? 'Active board' : 'Completed archive'}
+            </button>
+          ))}
+        </div>
         {!credentialsConfigured ? (
           <div className="mb-4 rounded border border-warning/40 bg-warning-soft p-3 text-sm">
             Set <code>JIRA_API_TOKEN</code> on the Archon server. <code>JIRA_EMAIL</code> is
@@ -238,9 +331,78 @@ export function JiraPage(): ReactElement {
           <div className="rounded border border-border bg-surface-elevated p-8 text-center text-text-secondary">
             Configure this project’s reusable Jira sprint to load its queue.
           </div>
+        ) : view === 'archive' ? (
+          <section className="mx-auto grid w-full max-w-4xl gap-3">
+            <header className="flex items-center justify-between text-xs text-text-secondary">
+              <span>Newest completed work first</span>
+              <span>{archivedIssues.length} completed</span>
+            </header>
+            {visibleArchivedIssues.map(issue => (
+              <article
+                key={issue.id}
+                className="rounded border border-success/40 bg-surface p-3 text-xs"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void openIssue(issue.key);
+                      }}
+                      className="font-mono text-accent-bright hover:underline"
+                    >
+                      {issue.key}
+                    </button>
+                    <a
+                      href={issue.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="ml-1 inline-flex text-text-tertiary hover:text-text-primary"
+                      title="Open in Jira"
+                      aria-label={`Open ${issue.key} in Jira`}
+                    >
+                      <ExternalLink className="h-3 w-3" aria-hidden />
+                    </a>
+                    <p className="mt-1 font-medium">{issue.summary}</p>
+                  </div>
+                  <time className="text-text-tertiary" dateTime={issue.updated}>
+                    {new Date(issue.updated).toLocaleString()}
+                  </time>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {issue.job?.workflowRunId ? (
+                    <Link
+                      to={`/console/p/${encodeURIComponent(projectId)}/r/${encodeURIComponent(issue.job.workflowRunId)}`}
+                      className="rounded border border-border px-2 py-1"
+                    >
+                      Archon run
+                    </Link>
+                  ) : null}
+                  {issue.job?.prUrl ? (
+                    <a
+                      href={issue.job.prUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded border border-border px-2 py-1"
+                    >
+                      PR
+                    </a>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+            {archivedIssues.length === 0 ? (
+              <div className="rounded border border-border bg-surface-elevated p-8 text-center text-text-secondary">
+                No development-complete tickets yet.
+              </div>
+            ) : null}
+            <div ref={archiveSentinelRef} className="h-8 text-center text-xs text-text-tertiary">
+              {archiveLimit < archivedIssues.length ? 'Loading more…' : 'End of archive'}
+            </div>
+          </section>
         ) : (
-          <div className="grid min-w-[900px] grid-cols-6 gap-3">
-            {STATUSES.map(status => (
+          <div className="grid min-w-[720px] grid-cols-3 gap-3">
+            {ACTIVE_STATUSES.map(status => (
               <section key={status} className={`rounded border p-2 ${statusTone(status)}`}>
                 <h2 className="mb-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider">
                   <span>{status}</span>
@@ -254,13 +416,24 @@ export function JiraPage(): ReactElement {
                         key={issue.id}
                         className="rounded border border-border bg-surface p-2 text-xs"
                       >
+                        <button
+                          type="button"
+                          className="font-mono text-accent-bright hover:underline"
+                          onClick={() => {
+                            void openIssue(issue.key);
+                          }}
+                        >
+                          {issue.key}
+                        </button>
                         <a
                           href={issue.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="font-mono text-accent-bright"
+                          className="ml-1 inline-flex text-text-tertiary hover:text-text-primary"
+                          title="Open in Jira"
+                          aria-label={`Open ${issue.key} in Jira`}
                         >
-                          {issue.key}
+                          <ExternalLink className="h-3 w-3" aria-hidden />
                         </a>
                         <p className="mt-1 font-medium">{issue.summary}</p>
                         {job?.conflictDetail && job.status === 'failed' ? (
@@ -295,6 +468,48 @@ export function JiraPage(): ReactElement {
                               }
                             >
                               {busy === issue.key ? 'Claiming…' : 'Run'}
+                            </button>
+                          ) : null}
+                          {status === 'MANUAL TEST' ? (
+                            <button
+                              type="button"
+                              disabled={
+                                transitionBusy ||
+                                (completionArmed === issue.key && !completionReady)
+                              }
+                              className="rounded bg-success px-2 py-1 font-semibold text-white disabled:opacity-50"
+                              onClick={() => {
+                                if (completionArmed !== issue.key) {
+                                  setCompletionArmed(issue.key);
+                                  setCompletionReady(false);
+                                  return;
+                                }
+                                const configuredDone =
+                                  configState.data?.config.workflow_states.done ?? ARCHIVE_STATUS;
+                                void (async (): Promise<void> => {
+                                  const detail = await skill.getJiraIssue(projectId, issue.key);
+                                  const transition = detail.transitions.find(
+                                    item =>
+                                      item.destination.toUpperCase() ===
+                                        configuredDone.toUpperCase() ||
+                                      item.name.toUpperCase() === configuredDone.toUpperCase()
+                                  );
+                                  if (!transition) {
+                                    setMessage(
+                                      `Jira does not currently offer a transition to ${configuredDone}.`
+                                    );
+                                    setCompletionArmed(null);
+                                    return;
+                                  }
+                                  await transitionIssue(issue.key, transition.id);
+                                })();
+                              }}
+                            >
+                              {completionArmed !== issue.key
+                                ? 'Mark development done'
+                                : completionReady
+                                  ? 'Confirm done'
+                                  : 'Wait 2 seconds…'}
                             </button>
                           ) : null}
                           {job?.workflowRunId ? (
@@ -403,6 +618,155 @@ export function JiraPage(): ReactElement {
             >
               ×
             </button>
+          </div>
+        </div>
+      ) : null}
+      {detailLoading ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="rounded border border-border bg-surface-elevated px-6 py-4 text-sm">
+            Loading Jira issue…
+          </div>
+        </div>
+      ) : null}
+      {selectedIssue ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${selectedIssue.issue.key} Jira details`}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => {
+            setSelectedIssue(null);
+          }}
+        >
+          <div
+            className="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-md border border-border bg-surface-elevated shadow-2xl"
+            onClick={event => {
+              event.stopPropagation();
+            }}
+          >
+            <header className="flex items-start justify-between gap-4 border-b border-border p-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="font-mono text-sm font-semibold text-accent-bright">
+                    {selectedIssue.issue.key}
+                  </h2>
+                  <a
+                    href={selectedIssue.issue.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Open in Jira"
+                    aria-label={`Open ${selectedIssue.issue.key} in Jira`}
+                    className="text-text-tertiary hover:text-text-primary"
+                  >
+                    <ExternalLink className="h-4 w-4" aria-hidden />
+                  </a>
+                </div>
+                <p className="mt-1 text-base font-semibold">{selectedIssue.issue.summary}</p>
+              </div>
+              <button
+                type="button"
+                className="rounded border border-border px-2 py-1 text-xs"
+                onClick={() => {
+                  setSelectedIssue(null);
+                }}
+              >
+                Close
+              </button>
+            </header>
+            <div className="grid gap-4 p-4">
+              <div className="flex flex-wrap gap-2 text-xs">
+                <span className="rounded border border-border px-2 py-1">
+                  {selectedIssue.issue.status}
+                </span>
+                <span className="rounded border border-border px-2 py-1">
+                  {selectedIssue.issue.issueType}
+                </span>
+                {selectedIssue.issue.priority ? (
+                  <span className="rounded border border-border px-2 py-1">
+                    {selectedIssue.issue.priority}
+                  </span>
+                ) : null}
+              </div>
+              <section>
+                <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                  Description
+                </h3>
+                <p className="whitespace-pre-wrap text-sm text-text-primary">
+                  {selectedIssue.issue.description || 'No description supplied.'}
+                </p>
+              </section>
+              {selectedIssue.issue.parent ? (
+                <section className="text-xs text-text-secondary">
+                  Parent: {selectedIssue.issue.parent.key} · {selectedIssue.issue.parent.summary}
+                </section>
+              ) : null}
+              {selectedIssue.costs ? (
+                <section>
+                  <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                    Archon cost
+                  </h3>
+                  <span
+                    className="inline-flex cursor-help rounded border border-border px-2 py-1 font-mono text-sm font-semibold tabular-nums"
+                    title={[
+                      ...selectedIssue.costs.byModel.map(
+                        item =>
+                          `${item.model}: ${formatCost(item.costUsd)} across ${String(item.calls)} call${item.calls === 1 ? '' : 's'}`
+                      ),
+                      ...(selectedIssue.costs.unattributedUsd > 0
+                        ? [
+                            `Unattributed/provider roll-up: ${formatCost(
+                              selectedIssue.costs.unattributedUsd
+                            )}`,
+                          ]
+                        : []),
+                    ].join('\n')}
+                  >
+                    {formatCost(selectedIssue.costs.totalUsd)} · {selectedIssue.costs.runCount} run
+                    {selectedIssue.costs.runCount === 1 ? '' : 's'}
+                  </span>
+                  <p className="mt-1 text-xs text-text-tertiary">Hover for spend by model.</p>
+                </section>
+              ) : null}
+              {selectedIssue.issue.subtasks.length > 0 ? (
+                <section>
+                  <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                    Subtasks
+                  </h3>
+                  <ul className="grid gap-1 text-xs">
+                    {selectedIssue.issue.subtasks.map(subtask => (
+                      <li key={subtask.key}>
+                        {subtask.key} · {subtask.summary} · {subtask.status}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
+              <section>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                  Change Jira state
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {selectedIssue.transitions.map(transition => (
+                    <button
+                      key={transition.id}
+                      type="button"
+                      disabled={transitionBusy}
+                      className="rounded border border-border px-3 py-1.5 text-xs hover:bg-surface-hover disabled:opacity-50"
+                      onClick={() => {
+                        void transitionIssue(selectedIssue.issue.key, transition.id);
+                      }}
+                    >
+                      {transition.name} → {transition.destination}
+                    </button>
+                  ))}
+                  {selectedIssue.transitions.length === 0 ? (
+                    <span className="text-xs text-text-tertiary">
+                      No transitions are currently available.
+                    </span>
+                  ) : null}
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       ) : null}

@@ -2,6 +2,7 @@ import type { OpenAPIHono } from '@hono/zod-openapi';
 import type { JiraDispatcher } from '../services/jira-dispatcher';
 import { registerApiRoutes } from './api';
 import { registerJiraRoutes } from './jira';
+import { registerBudgetRoutes } from './budget';
 
 type ApiRouteArgs = Parameters<typeof registerApiRoutes>;
 
@@ -14,4 +15,5 @@ export function registerServerApiRoutes(
 ): void {
   registerApiRoutes(app, webAdapter, lockManager, activePlatforms);
   registerJiraRoutes(app, jiraDispatcher);
+  registerBudgetRoutes(app);
 }

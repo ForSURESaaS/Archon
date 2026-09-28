@@ -64,8 +64,28 @@ export async function listCostRuns(codebaseId: string, after?: string): Promise<
   for (let offset = 0; ; offset += pageSize) {
     const page = await listRuns({ codebaseId, after, limit: pageSize, offset });
     runs.push(...page.runs);
-    if (runs.length >= page.total || page.runs.length < pageSize) return runs;
+    if (runs.length >= page.total || page.runs.length < pageSize) break;
   }
+  return Promise.all(
+    runs.map(async run => {
+      if (run.parentRunId !== null || run.costUsd === null) return run;
+      const detail = await getRun(run.id);
+      const byModel = new Map<string, { costUsd: number; calls: number }>();
+      for (const event of detail.events) {
+        if (event.kind !== 'node_transition' || event.model === null || event.costUsd === null)
+          continue;
+        const prior = byModel.get(event.model) ?? { costUsd: 0, calls: 0 };
+        byModel.set(event.model, {
+          costUsd: prior.costUsd + event.costUsd,
+          calls: prior.calls + 1,
+        });
+      }
+      return {
+        ...run,
+        modelCosts: [...byModel.entries()].map(([model, value]) => ({ model, ...value })),
+      };
+    })
+  );
 }
 
 export async function listGlobalCounts(): Promise<RunCounts> {

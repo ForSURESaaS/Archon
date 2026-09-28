@@ -61,6 +61,7 @@ export interface NodeTransitionEvent extends RunEventBase {
    * renderer — carried so the eventual per-node detail view needn't re-touch this.
    */
   outputPreview: string | null;
+  model: string | null;
   costUsd: number | null;
   stopReason: string | null;
   numTurns: number | null;
@@ -128,6 +129,16 @@ function readNumberOrNull(obj: Record<string, unknown>, key: string): number | n
   return typeof v === 'number' ? v : null;
 }
 
+function readRequestedModel(data: Record<string, unknown>): string | null {
+  const binding = data.binding;
+  if (binding === null || typeof binding !== 'object') return null;
+  const model = (binding as Record<string, unknown>).model;
+  if (typeof model === 'string') return model;
+  if (model === null || typeof model !== 'object') return null;
+  const requested = (model as Record<string, unknown>).requested;
+  return typeof requested === 'string' ? requested : null;
+}
+
 /**
  * DB node-event `event_type` → UI transition. Listed explicitly (rather than
  * string-slicing `node_<x>`) because `node_skipped_prior_success` — emitted on
@@ -179,6 +190,7 @@ export function toRunEvent(raw: RawWorkflowEvent): RunEvent {
       skipReason: transition === 'skipped' ? readStringOrNull(data, 'reason') : null,
       skipExpr: transition === 'skipped' ? readStringOrNull(data, 'expr') : null,
       outputPreview: output === null ? null : output.slice(0, 300),
+      model: readRequestedModel(data),
       costUsd: readNumberOrNull(data, 'cost_usd'),
       stopReason: readStringOrNull(data, 'stop_reason'),
       numTurns: readNumberOrNull(data, 'num_turns'),

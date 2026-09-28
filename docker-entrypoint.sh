@@ -11,6 +11,25 @@ mkdir -p /.archon/workspaces /.archon/worktrees
 # Kubernetes), or root via the explicit ARCHON_ALLOW_ROOT_FALLBACK opt-in below.
 RUNNER=""
 if [ "$(id -u)" = "0" ]; then
+  # Bind-mounted repositories keep their host group ownership. Grant appuser
+  # that supplementary group so worktree setup can fetch/write Git objects
+  # without changing host ownership or making the repository world-writable.
+  if [ -n "${ARCHON_REPO_GID:-}" ]; then
+    case "$ARCHON_REPO_GID" in
+      *[!0-9]*|'')
+        echo "ERROR: ARCHON_REPO_GID must be a numeric group id" >&2
+        exit 1
+        ;;
+    esac
+    repo_group="$(getent group "$ARCHON_REPO_GID" | cut -d: -f1)"
+    if [ -z "$repo_group" ]; then
+      repo_group="archon-repo"
+      groupadd --gid "$ARCHON_REPO_GID" "$repo_group"
+    fi
+    usermod --append --groups "$repo_group" appuser
+    unset repo_group
+  fi
+
   # A blanket `chown -R` rewrites metadata for every inode (#1970); only files
   # with wrong ownership are touched.
   # find + chown -h leaves symlinks un-dereferenced (no-dereference by design).

@@ -9,7 +9,17 @@ import { streamSSE } from 'hono/streaming';
 import { cors } from 'hono/cors';
 import type { WebAdapter } from '../adapters/web';
 import { boundMetadataToolOutputs } from '../adapters/web/truncate';
-import { rm, readFile, writeFile, unlink, mkdir, readdir, realpath, stat } from 'fs/promises';
+import {
+  rm,
+  readFile,
+  writeFile,
+  unlink,
+  mkdir,
+  chmod,
+  readdir,
+  realpath,
+  stat,
+} from 'fs/promises';
 import { existsSync, readFileSync } from 'fs';
 import { normalize, join, basename, dirname, resolve } from 'path';
 import { randomUUID } from 'crypto';
@@ -2862,7 +2872,10 @@ export function registerApiRoutes(
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const handoffDir = join(getArchonHome(), 'handoffs');
       const filePath = join(handoffDir, `${timestamp}-${safeId}.md`);
-      await mkdir(handoffDir, { recursive: true });
+      // Handoffs contain complete conversation histories and may include sensitive
+      // source or credentials pasted into chat. Do not rely on the process umask.
+      await mkdir(handoffDir, { recursive: true, mode: 0o700 });
+      await chmod(handoffDir, 0o700);
 
       const title = conv.title?.trim() || 'Untitled conversation';
       const sections = messages.map(message => {
@@ -2881,7 +2894,7 @@ export function registerApiRoutes(
         ...sections,
         '',
       ].join('\n');
-      await writeFile(filePath, markdown, 'utf-8');
+      await writeFile(filePath, markdown, { encoding: 'utf-8', mode: 0o600 });
 
       return c.json({ path: filePath, messageCount: messages.length });
     } catch (error) {

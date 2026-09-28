@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { Run } from '../primitives/run';
-import { selectCostRuns } from './CostsPage';
+import { aggregateTokenUsage, selectCostRuns } from './CostsPage';
 
 function run(overrides: Partial<Run> = {}): Run {
   return {
@@ -59,5 +59,41 @@ describe('selectCostRuns', () => {
     );
 
     expect(result.requests.map(item => item.id)).toEqual(['run-1']);
+  });
+});
+
+describe('aggregateTokenUsage', () => {
+  test('includes token-only requests that do not report USD cost', () => {
+    const requests = selectCostRuns(
+      [
+        run(),
+        run({
+          id: 'token-only',
+          costUsd: null,
+          tokensIn: 20,
+          tokensOut: 8,
+          cacheReadTokens: 4,
+        }),
+      ],
+      0
+    ).requests;
+
+    expect(aggregateTokenUsage(requests)).toEqual({
+      tokensIn: 30,
+      tokensOut: 13,
+      cacheRead: 4,
+    });
+  });
+
+  test('ignores missing and non-finite token values', () => {
+    expect(
+      aggregateTokenUsage([
+        run({
+          tokensIn: null,
+          tokensOut: Number.NaN,
+          cacheReadTokens: Number.POSITIVE_INFINITY,
+        }),
+      ])
+    ).toEqual({ tokensIn: 0, tokensOut: 0, cacheRead: 0 });
   });
 });

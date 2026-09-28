@@ -33,6 +33,8 @@ export interface JiraQueueConfig {
     claimed: string;
     ready_for_manual_test_via: string[];
     ready_for_manual_test: string;
+    done_via: string[];
+    done: string;
     terminal: string[];
   };
   automation: {

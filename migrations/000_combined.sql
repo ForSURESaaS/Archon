@@ -36,6 +36,25 @@
 -- Table 1: Codebases
 -- ============================================================================
 
+CREATE TABLE IF NOT EXISTS remote_agent_spend_config (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  daily_limit_usd DOUBLE PRECISION
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_daily_spend_credits (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  day_utc DATE NOT NULL,
+  amount_usd DOUBLE PRECISION NOT NULL CHECK (amount_usd > 0),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_ai_spend_entries (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  day_utc DATE NOT NULL,
+  amount_usd DOUBLE PRECISION NOT NULL CHECK (amount_usd >= 0),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS remote_agent_codebases (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name VARCHAR(255) NOT NULL,
@@ -847,6 +866,10 @@ CREATE INDEX IF NOT EXISTS idx_workflow_events_type
 -- (WHERE created_at >= $1 ORDER BY created_at ASC).
 CREATE INDEX IF NOT EXISTS idx_workflow_events_created_at
   ON remote_agent_workflow_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_daily_spend_credits_day
+  ON remote_agent_daily_spend_credits(day_utc);
+CREATE INDEX IF NOT EXISTS idx_ai_spend_entries_day
+  ON remote_agent_ai_spend_entries(day_utc);
 -- Tie-breaker order within a run; NULL for rows written before event_order
 -- existed, which the partial predicate keeps out of the unique constraint.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_run_order
