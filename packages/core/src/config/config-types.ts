@@ -35,6 +35,29 @@ export type {
 };
 export type { RawAliasesConfig, RawTiersConfig };
 
+export const AUDIO_VOICES = [
+  'alloy',
+  'ash',
+  'ballad',
+  'coral',
+  'echo',
+  'sage',
+  'shimmer',
+  'verse',
+] as const;
+export type AudioVoice = (typeof AUDIO_VOICES)[number];
+
+export interface AudioConfig {
+  /** Whether speech synthesis is available to clients. @default true */
+  enabled?: boolean;
+  /** Speech provider. Azure OpenAI is currently supported. */
+  provider?: 'azure-openai';
+  /** Azure deployment name. @default 'gpt-audio-mini-global' */
+  model?: string;
+  /** Azure OpenAI speech voice. @default 'coral' */
+  voice?: AudioVoice;
+}
+
 /**
  * Intersection type: generic `ProviderDefaultsMap` (any string key) with
  * typed built-in entries.
@@ -126,6 +149,9 @@ export interface GlobalConfig {
    * Assistant-specific defaults (model, reasoning effort, etc.)
    */
   assistants?: AssistantDefaultsConfig;
+
+  /** Ephemeral speech synthesis preferences. Credentials remain environment-only. */
+  audio?: AudioConfig;
 
   /**
    * Named model aliases accessible in workflow/node `model:` fields.
@@ -375,6 +401,7 @@ export interface MergedConfig {
   botName: string;
   assistant: string;
   assistants: AssistantDefaults;
+  audio?: Required<AudioConfig>;
   /**
    * Merged aliases (repo > global). Used by buildAiProfile at execution time.
    * Undefined when no aliases are configured anywhere.
@@ -456,6 +483,7 @@ export interface SafeConfig {
   botName: string;
   assistant: string;
   assistants: ProviderDefaultsMap;
+  audio: Required<AudioConfig>;
   streaming: {
     telegram: 'stream' | 'batch';
     discord: 'stream' | 'batch';

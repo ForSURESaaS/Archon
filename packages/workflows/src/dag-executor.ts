@@ -40,6 +40,7 @@ import { basename, isAbsolute, join as joinPath, resolve as resolvePath } from '
 import { execFileAsync, resolveBashPath } from '@archon/git';
 import { isEffortRung } from '@archon/paths/effort';
 import { discoverScriptsForCwd } from './script-discovery';
+import { isBinaryBuild } from './defaults/bundled-defaults';
 import { discoverWorkflowsWithConfig, resolveWorkflowCommandContents } from './workflow-discovery';
 import {
   assertWorkflowSourceIntegrity,
@@ -4122,11 +4123,15 @@ async function executeScriptNode(
   let args: string[] = [];
 
   const nodeDeps = node.deps ?? [];
+  // Source installs run inside Bun already. A detached host may have a minimal PATH,
+  // so use that running Bun executable; a compiled Archon binary is not a Bun CLI.
+  // Containers always resolve their own Bun from the runner image's PATH.
+  const bunCommand = execContext.kind === 'host' && !isBinaryBuild() ? process.execPath : 'bun';
 
   if (isInlineScript(finalScript)) {
     // Inline code execution
     if (node.runtime === 'bun') {
-      cmd = 'bun';
+      cmd = bunCommand;
       // --no-env-file prevents Bun from auto-loading .env from the execution
       // cwd (the target repo). Without this, repo .env leaks into the script
       // subprocess despite Archon's parent process cleanup.
@@ -4184,7 +4189,7 @@ async function executeScriptNode(
       const withFlags = nodeDeps.flatMap(dep => ['--with', dep]);
       args = ['run', ...withFlags, scriptDef.path];
     } else {
-      cmd = 'bun';
+      cmd = bunCommand;
       args = ['--no-env-file', 'run', scriptDef.path];
     }
   }

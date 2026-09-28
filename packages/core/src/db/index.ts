@@ -22,6 +22,7 @@ export * as workflowDb from './workflows';
 export * as workflowNodeSessionDb from './workflow-node-sessions';
 export * as workflowRunNodeSessionDb from './workflow-run-node-sessions';
 export * as userDb from './users';
+export * as jiraAnnouncementDb from './jira-announcements';
 
 // Also export individual functions for direct imports
 export * from './conversations';
@@ -34,3 +35,4 @@ export * from './resource-starts';
 export * from './workflow-node-sessions';
 export * from './workflow-run-node-sessions';
 export * from './users';
+export * from './jira-announcements';

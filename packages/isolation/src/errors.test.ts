@@ -2,6 +2,18 @@ import { describe, test, expect } from 'bun:test';
 import { classifyIsolationError, isKnownIsolationError, IsolationBlockedError } from './errors';
 
 describe('classifyIsolationError', () => {
+  test('preserves Git metadata path and group remediation before generic permission matching', () => {
+    const err = new Error(
+      'Git metadata is not writable at /mounted/repo/.git/objects for the Archon process ' +
+        '(uid 1001, gid 1001). Configure ARCHON_REPO_GID to the host repository group ID; permission denied.'
+    );
+    const result = classifyIsolationError(err);
+    expect(isKnownIsolationError(err)).toBe(true);
+    expect(result).toContain('/mounted/repo/.git/objects');
+    expect(result).toContain('ARCHON_REPO_GID');
+    expect(result).toContain('uid 1001');
+  });
+
   test('matches "permission denied" in message', () => {
     const result = classifyIsolationError(new Error('Permission denied: /workspace'));
     expect(result).toContain('Permission denied');

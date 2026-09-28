@@ -361,6 +361,8 @@ import {
   configResponseSchema,
   updateTiersBodySchema,
   updateAliasesBodySchema,
+  updateAudioConfigBodySchema,
+  speechSynthesisBodySchema,
   codebaseEnvironmentsResponseSchema,
 } from './schemas/config.schemas';
 import {
@@ -402,6 +404,11 @@ import {
   updateUserDefaultBodySchema,
 } from './schemas/user-ai-prefs.schemas';
 import { mapDeviceFlowErrorToPollStatus } from './auth-poll-status';
+import {
+  isAzureSpeechConfigured,
+  SpeechConfigurationError,
+  synthesizeAzureSpeech,
+} from '../services/azure-speech';
 import {
   getProviderInfoList,
   isRegisteredProvider,
@@ -1236,6 +1243,50 @@ const patchAssistantConfigRoute = createRoute({
       description: 'Updated configuration',
     },
     400: jsonError('Invalid request body, or the resulting config is invalid'),
+    500: jsonError('Server error'),
+  },
+});
+
+const patchAudioConfigRoute = createRoute({
+  method: 'patch',
+  path: '/api/config/audio',
+  tags: ['System'],
+  summary: 'Update speech synthesis configuration',
+  request: {
+    body: {
+      content: { 'application/json': { schema: updateAudioConfigBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: configResponseSchema } },
+      description: 'Updated configuration',
+    },
+    400: jsonError('Invalid request body, or the resulting config is invalid'),
+    500: jsonError('Server error'),
+  },
+});
+
+const synthesizeSpeechRoute = createRoute({
+  method: 'post',
+  path: '/api/audio/speech',
+  tags: ['System'],
+  summary: 'Synthesize ephemeral speech with Azure OpenAI',
+  request: {
+    body: {
+      content: { 'application/json': { schema: speechSynthesisBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: { 'audio/mpeg': { schema: z.string().openapi({ format: 'binary' }) } },
+      description: 'Synthesized MP3 audio',
+    },
+    401: jsonError('Web authentication required'),
+    409: jsonError('Audio synthesis is disabled'),
+    503: jsonError('Azure speech synthesis is unavailable'),
     500: jsonError('Server error'),
   },
 });
@@ -5148,6 +5199,65 @@ export function registerApiRoutes(
         'config.assistants_update_failed',
         'Failed to update assistant configuration'
       );
+    }
+  });
+
+  registerOpenApiRoute(patchAudioConfigRoute, async c => {
+    try {
+      const body = getValidatedBody(c, updateAudioConfigBodySchema);
+      await updateGlobalConfig({ audio: body });
+      const config = await loadConfig();
+      return c.json({
+        config: toSafeConfig(config),
+        database: getDatabaseType(),
+      });
+    } catch (error) {
+      return configUpdateFailed(
+        c,
+        error,
+        'config.audio_update_failed',
+        'Failed to update audio configuration'
+      );
+    }
+  });
+
+  registerOpenApiRoute(synthesizeSpeechRoute, async c => {
+    const web = await requireWebUser(c, 'Web authentication required to synthesize speech');
+    if ('error' in web) return web.error;
+
+    const { input } = getValidatedBody(c, speechSynthesisBodySchema);
+    const config = await loadConfig();
+    if (!config.audio?.enabled) return apiError(c, 409, 'Audio synthesis is disabled');
+    if (!isAzureSpeechConfigured()) {
+      return apiError(c, 503, 'Azure speech synthesis is not configured');
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 30_000);
+    try {
+      const audio = await synthesizeAzureSpeech(
+        input,
+        config.audio?.voice ?? 'coral',
+        config.audio?.model ?? 'gpt-audio-mini-global',
+        controller.signal
+      );
+      return new Response(audio, {
+        status: 200,
+        headers: {
+          'Content-Type': 'audio/mpeg',
+          'Cache-Control': 'no-store',
+        },
+      });
+    } catch (error) {
+      if (error instanceof SpeechConfigurationError) {
+        return apiError(c, 503, 'Azure speech synthesis is not configured');
+      }
+      getLog().error({ err: error, userId: web.userId }, 'audio.synthesis_failed');
+      return apiError(c, 503, 'Azure speech synthesis failed');
+    } finally {
+      clearTimeout(timeout);
     }
   });
 

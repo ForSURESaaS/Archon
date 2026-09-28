@@ -40,6 +40,13 @@ const ERROR_PATTERNS: {
     message: cause => `**Error:** ${cause}`,
     known: true,
   },
+  {
+    // Keep the precise metadata path and UID/GID remediation from the preflight.
+    // The generic permission classifier below would otherwise erase both.
+    pattern: 'git metadata is not writable at',
+    message: cause => `**Error:** ${cause}`,
+    known: true,
+  },
   // ─── Container backend (Docker) ──────────────────────────────────────────
   // Checked FIRST: the docker-permission message is more specific than the
   // generic 'permission denied' worktree message below and must win.

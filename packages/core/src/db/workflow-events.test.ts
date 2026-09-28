@@ -1482,6 +1482,7 @@ const AXIS_SPECIMEN: Required<TokenUsage> = {
   cachePartial: true,
   total: 6400,
   cost: 0.25,
+  costBreakdown: { input: 0.05, output: 0.1, cacheRead: 0.04, cacheWrite: 0.06 },
 };
 
 describe('TokenUsage axis seam guard', () => {

@@ -64,7 +64,8 @@
       "src/services/resource-start-hosting.integration.test.ts"
     ],
     [
-      "src/services/jira-client.test.ts"
+      "src/services/jira-client.test.ts",
+      "src/services/jira-dispatcher.test.ts"
     ],
     [
       "src/adapters/web/transport.test.ts"

@@ -104,6 +104,28 @@ concurrency:
       expect(config.concurrency?.maxConversations).toBe(5);
     });
 
+    test('loads validated audio configuration', async () => {
+      mockFsReadFile.mockResolvedValue(`
+audio:
+  enabled: true
+  voice: sage
+`);
+
+      const config = await loadGlobalConfig();
+      expect(config.audio).toEqual({ enabled: true, voice: 'sage' });
+    });
+
+    test('degrades invalid audio configuration to defaults', async () => {
+      mockFsReadFile.mockResolvedValue(`
+audio:
+  enabled: true
+  voice: unsupported
+`);
+
+      expect(await loadGlobalConfig()).toEqual({});
+      expect(mockLogger.error).toHaveBeenCalled();
+    });
+
     test.each([
       ['tiers', 'medium'],
       ['aliases', "'@deep'"],
@@ -850,6 +872,26 @@ env:
 
       expect(config.paths.workspaces).toBe(join(homedir(), '.archon', 'workspaces'));
       expect(config.paths.worktrees).toBe(join(homedir(), '.archon', 'worktrees'));
+    });
+
+    test('defaults audio to disabled with the coral voice', async () => {
+      const error = new Error('ENOENT') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      mockFsReadFile.mockRejectedValue(error);
+
+      const config = await loadConfig();
+      expect(config.audio).toEqual({
+        enabled: true,
+        provider: 'azure-openai',
+        model: 'gpt-audio-mini-global',
+        voice: 'coral',
+      });
+      expect(toSafeConfig(config).audio).toEqual({
+        enabled: true,
+        provider: 'azure-openai',
+        model: 'gpt-audio-mini-global',
+        voice: 'coral',
+      });
     });
   });
 

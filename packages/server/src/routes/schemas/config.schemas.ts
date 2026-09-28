@@ -3,6 +3,17 @@
  */
 import { z } from '@hono/zod-openapi';
 import { effortLevelSchema, rejectRetiredThinking } from '@archon/workflows/schemas/effort';
+import { AUDIO_VOICES } from '@archon/core/config';
+
+export const audioVoiceSchema = z.enum(AUDIO_VOICES).openapi('AudioVoice');
+export const audioConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    provider: z.literal('azure-openai'),
+    model: z.string().min(1),
+    voice: audioVoiceSchema,
+  })
+  .openapi('AudioConfig');
 
 /** Schema for the safe config subset returned to web clients (mirrors SafeConfig in config-types.ts). */
 const providerDefaultsSchema = z.record(z.string(), z.unknown()).openapi('ProviderDefaults');
@@ -48,6 +59,7 @@ export const safeConfigSchema = z
     botName: z.string(),
     assistant: z.string().min(1),
     assistants: z.record(z.string(), providerDefaultsSchema),
+    audio: audioConfigSchema,
     streaming: z.object({
       telegram: z.enum(['stream', 'batch']),
       discord: z.enum(['stream', 'batch']),
@@ -83,6 +95,31 @@ export const updateAssistantConfigBodySchema = z
     assistants: z.record(z.string(), providerDefaultsSchema).optional(),
   })
   .openapi('UpdateAssistantConfigBody');
+
+export const updateAudioConfigBodySchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    provider: z.literal('azure-openai').optional(),
+    model: z.string().min(1).optional(),
+    voice: audioVoiceSchema.optional(),
+  })
+  .refine(
+    value =>
+      value.enabled !== undefined ||
+      value.provider !== undefined ||
+      value.model !== undefined ||
+      value.voice !== undefined,
+    {
+      message: 'At least one audio setting is required',
+    }
+  )
+  .openapi('UpdateAudioConfigBody');
+
+export const speechSynthesisBodySchema = z
+  .object({
+    input: z.string().trim().min(1).max(4096),
+  })
+  .openapi('SpeechSynthesisBody');
 
 /** Response for GET /api/config and PATCH /api/config/assistants — returns updated safe config. */
 export const configResponseSchema = z

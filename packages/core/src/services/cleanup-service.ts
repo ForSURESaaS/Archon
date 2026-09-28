@@ -373,6 +373,17 @@ export async function removeEnvironment(
   const provider = getIsolationProvider();
 
   try {
+    // Recheck ownership at the removal boundary, including missing paths: the
+    // scheduler's earlier check must not invalidate a newly claimed run's env.
+    if (!options?.force) {
+      const liveRun = await isolationEnvDb.getLiveRunOwningEnv(envId);
+      if (liveRun) {
+        return {
+          ...noopResult,
+          skippedReason: `run ${liveRun.id.slice(0, 8)} is ${liveRun.status}`,
+        };
+      }
+    }
     // If path exists, check for uncommitted changes (unless force)
     if (pathExists && !options?.force) {
       const hasChanges = await hasUncommittedChanges(toWorktreePath(env.working_path));

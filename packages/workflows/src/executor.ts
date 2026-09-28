@@ -1082,6 +1082,32 @@ export async function inspectResumableRun(
 ): Promise<ResumableRunInspection | null> {
   const snapshot = await deps.store.getDagResumeSnapshot(candidate.id);
   const priorCompletedNodes = snapshot.completedNodeOutputs;
+  // A composed delivery has the failed assertion in its implementation child run.
+  // Check that child as well as the selected run before claiming either run for resume.
+  if (candidate.status === 'failed') {
+    const childRuns = await deps.store.findChildRuns(candidate.id);
+    for (const run of [candidate, ...childRuns.filter(child => child.status === 'failed')]) {
+      const failure = run.metadata?.error;
+      if (
+        typeof failure !== 'string' ||
+        !failure.includes('assert-changed') ||
+        (!failure.includes('changed no content outside .archon/') &&
+          !failure.includes('declared done with no new content'))
+      )
+        continue;
+      const completed =
+        run.id === candidate.id
+          ? priorCompletedNodes
+          : (await deps.store.getDagResumeSnapshot(run.id)).completedNodeOutputs;
+      if (![...completed.keys()].some(id => id === 'implement' || id.endsWith('__implement')))
+        continue;
+      throw new Error(
+        `Cannot resume workflow ${candidate.id}: the implementation completed without new work ` +
+          `in run ${run.id}, so resume would skip it and repeat the failed no-change assertion. ` +
+          'Start a fresh implementation attempt on the preserved checkout; do not replay this run.'
+      );
+    }
+  }
   const rawApproval = candidate.metadata?.approval;
   const approvalContext = isApprovalContext(rawApproval) ? rawApproval : undefined;
   const hasReRunGateState = reRunsOwnNodeOnResume(approvalContext, candidate.metadata);

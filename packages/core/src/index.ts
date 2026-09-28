@@ -64,6 +64,7 @@ export * as workflowDb from './db/workflows';
 export * as messageDb from './db/messages';
 export * as userDb from './db/users';
 export * as jiraQueueDb from './db/jira-queue';
+export * as jiraAnnouncementDb from './db/jira-announcements';
 
 // Re-export SessionNotFoundError for error handling
 export { SessionNotFoundError } from './db/sessions';

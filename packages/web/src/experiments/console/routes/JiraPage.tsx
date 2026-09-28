@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { Link, useParams } from 'react-router';
-import { ExternalLink } from 'lucide-react';
+import { AudioLines, ExternalLink } from 'lucide-react';
+import { useAudio } from '../components/AudioProvider';
+import { isInterruptedPlayback } from '../lib/audio-controller';
 import { ProjectViewTabs } from '../components/ProjectViewTabs';
 import { useBackgroundRefresh } from '../lib/background-refresh';
 import { elapsedSince, ensureUtc, formatCost, formatElapsed } from '../lib/format';
 import { invalidate, useEntity } from '../store/cache';
 import * as skill from '../skills';
-
 const ACTIVE_STATUSES = ['TO DO', 'IN PROGRESS', 'MANUAL TEST'] as const;
 const ARCHIVE_STATUS = 'DEVELOPMENT DONE';
 const ARCHIVE_PAGE_SIZE = 20;
@@ -108,6 +109,129 @@ function statusTone(status: string): string {
   return 'border-border bg-surface-elevated';
 }
 
+function JiraAudioLogPlayer({ log }: { log: skill.JiraAudioLog }): ReactElement {
+  const audio = useAudio();
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const urlRef = useRef<string | null>(null);
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    return (): void => {
+      requestRef.current += 1;
+      audioRef.current?.pause();
+      if (audioRef.current) audioRef.current.removeAttribute('src');
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = audio.volume;
+  }, [audio.volume]);
+
+  const generate = async (): Promise<void> => {
+    if (loading) return;
+    const request = ++requestRef.current;
+    setLoading(true);
+    setError(null);
+    setPlaybackError(null);
+    try {
+      // Exactly the visible snippet; explicit replay is allowed while globally muted.
+      const result = await skill.synthesizeSpeech({ text: log.text, announcementId: log.id });
+      if (requestRef.current !== request) {
+        URL.revokeObjectURL(result.audioUrl);
+        return;
+      }
+      audioRef.current?.pause();
+      if (audioRef.current) audioRef.current.removeAttribute('src');
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      urlRef.current = result.audioUrl;
+      setAudioUrl(result.audioUrl);
+      const element = audioRef.current;
+      if (element) {
+        // The media element owns its source. Also passing src through React below
+        // causes a second load during setAudioUrl's render, aborting play() even
+        // though the replacement audio can already be playing.
+        element.src = result.audioUrl;
+        element.volume = audio.volume;
+        try {
+          await element.play();
+        } catch (cause) {
+          if (requestRef.current === request && !isInterruptedPlayback(cause)) {
+            setPlaybackError(cause instanceof Error ? cause.message : String(cause));
+          }
+        }
+      }
+    } catch (cause) {
+      if (requestRef.current === request)
+        setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (requestRef.current === request) setLoading(false);
+    }
+  };
+
+  return (
+    <article className="rounded-xl border border-border bg-surface-elevated p-4 text-sm">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
+        <AudioLines aria-hidden className="h-4 w-4 text-accent" />
+        {log.issueKey ? <span className="font-mono">{log.issueKey}</span> : null}
+        <span>{log.status}</span>
+        <time dateTime={log.createdAt}>{new Date(log.createdAt).toLocaleString()}</time>
+      </div>
+      <p className="mt-2 whitespace-pre-wrap text-text-primary">{log.text}</p>
+      {log.error ? <p className="mt-2 text-xs text-error">{log.error}</p> : null}
+      <div className="mt-3 rounded-lg border border-border bg-surface p-3">
+        <label
+          htmlFor={`audio-${log.id}`}
+          className="mb-2 block text-[11px] font-semibold uppercase tracking-wide text-text-tertiary"
+        >
+          Audio player · only the snippet above
+        </label>
+        <audio
+          ref={audioRef}
+          id={`audio-${log.id}`}
+          controls
+          preload="none"
+          onError={() => {
+            if (audioUrl) setPlaybackError('Audio playback failed.');
+          }}
+          className="w-full"
+        >
+          Your browser does not support audio playback.
+        </audio>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={loading}
+            onClick={() => {
+              void generate();
+            }}
+            className="rounded border border-border px-3 py-1.5 text-xs hover:bg-surface-hover disabled:opacity-50"
+            title="Generates a new billed Azure request, even while muted"
+          >
+            {loading
+              ? 'Generating speech…'
+              : audioUrl
+                ? 'Regenerate (billed)'
+                : 'Generate & play (billed)'}
+          </button>
+          <span className="text-[11px] text-text-tertiary">
+            Play, pause and seek without further requests. Audio is temporary.
+          </span>
+        </div>
+        {error || playbackError ? (
+          <p role="alert" className="mt-2 text-xs text-error">
+            {error ?? playbackError}
+          </p>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
 export function JiraPage(): ReactElement {
   const { projectId = '' } = useParams<{ projectId: string }>();
   const configKey = `jira-config:${projectId}`;
@@ -120,7 +244,9 @@ export function JiraPage(): ReactElement {
   );
   const [draft, setDraft] = useState<skill.JiraQueueConfig | null>(null);
   const [showConfig, setShowConfig] = useState(false);
-  const [view, setView] = useState<'active' | 'archive'>('active');
+  const [view, setView] = useState<'active' | 'archive' | 'audio'>('active');
+  const [audioLogs, setAudioLogs] = useState<skill.JiraAudioLog[] | null>(null);
+  const [audioLogsError, setAudioLogsError] = useState<string | null>(null);
   const [archiveLimit, setArchiveLimit] = useState(ARCHIVE_PAGE_SIZE);
   const archiveSentinelRef = useRef<HTMLDivElement | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -176,6 +302,23 @@ export function JiraPage(): ReactElement {
       observer.disconnect();
     };
   }, [view, archiveLimit, archivedIssues.length]);
+
+  useEffect(() => {
+    if (view !== 'audio') return;
+    let active = true;
+    setAudioLogsError(null);
+    void skill
+      .getJiraAudioLogs(projectId)
+      .then(result => {
+        if (active) setAudioLogs(result.logs);
+      })
+      .catch(error => {
+        if (active) setAudioLogsError(error instanceof Error ? error.message : String(error));
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [projectId, view]);
 
   const mutate = async (name: string, action: () => Promise<unknown>): Promise<void> => {
     setBusy(name);
@@ -274,7 +417,7 @@ export function JiraPage(): ReactElement {
 
       <main className="min-h-0 flex-1 overflow-auto p-4">
         <div className="mb-4 flex gap-1 border-b border-border">
-          {(['active', 'archive'] as const).map(option => (
+          {(['active', 'archive', 'audio'] as const).map(option => (
             <button
               key={option}
               type="button"
@@ -287,7 +430,11 @@ export function JiraPage(): ReactElement {
                 setView(option);
               }}
             >
-              {option === 'active' ? 'Active board' : 'Completed archive'}
+              {option === 'active'
+                ? 'Active board'
+                : option === 'archive'
+                  ? 'Completed archive'
+                  : 'Audio logs'}
             </button>
           ))}
         </div>
@@ -420,6 +567,22 @@ export function JiraPage(): ReactElement {
           <div className="rounded border border-border bg-surface-elevated p-8 text-center text-text-secondary">
             Configure this project’s reusable Jira sprint to load its queue.
           </div>
+        ) : view === 'audio' ? (
+          <section className="mx-auto grid w-full max-w-4xl gap-3">
+            {audioLogsError !== null ? (
+              <div className="rounded border border-error/40 bg-error-soft p-3 text-sm text-error">
+                {audioLogsError}
+              </div>
+            ) : null}
+            {(audioLogs ?? []).map(log => (
+              <JiraAudioLogPlayer key={log.id} log={log} />
+            ))}
+            {audioLogs === null ? (
+              <div className="p-8 text-center text-text-tertiary">Loading audio logs…</div>
+            ) : audioLogs.length === 0 ? (
+              <div className="p-8 text-center text-text-tertiary">No Jira audio logs yet.</div>
+            ) : null}
+          </section>
         ) : view === 'archive' ? (
           <section className="mx-auto grid w-full max-w-4xl gap-3">
             <header className="flex items-center justify-between text-xs text-text-secondary">
@@ -609,6 +772,20 @@ export function JiraPage(): ReactElement {
                             >
                               Archon run
                             </Link>
+                          ) : null}
+                          {job?.resumeEligibility.eligible === true ? (
+                            <button
+                              type="button"
+                              disabled={busy !== null}
+                              className="rounded bg-accent px-2 py-1 font-semibold text-white disabled:opacity-50"
+                              onClick={() =>
+                                void mutate(`resume:${job.id}`, () =>
+                                  skill.resumeJiraJob(projectId, job.id)
+                                )
+                              }
+                            >
+                              {busy === `resume:${job.id}` ? 'Resuming…' : 'Resume'}
+                            </button>
                           ) : null}
                           {job &&
                           job.status !== 'running' &&

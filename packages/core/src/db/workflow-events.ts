@@ -631,6 +631,23 @@ export async function getDagResumeSnapshot(workflowRunId: string): Promise<DagRe
         if (optionalTokens.cachePartial === true) {
           normalized.cachePartial = true;
         }
+        const breakdown = optionalTokens.costBreakdown;
+        if (breakdown !== null && typeof breakdown === 'object') {
+          const parts = breakdown as Record<string, unknown>;
+          if (
+            ['input', 'output', 'cacheRead', 'cacheWrite'].every(
+              axis =>
+                typeof parts[axis] === 'number' && Number.isFinite(parts[axis]) && parts[axis] >= 0
+            )
+          ) {
+            normalized.costBreakdown = {
+              input: parts.input as number,
+              output: parts.output as number,
+              cacheRead: parts.cacheRead as number,
+              cacheWrite: parts.cacheWrite as number,
+            };
+          }
+        }
         contribution.tokens = normalized;
       } else {
         getLog().warn(

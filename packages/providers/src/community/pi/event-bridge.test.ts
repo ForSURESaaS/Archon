@@ -127,6 +127,19 @@ describe('serializeToolResult', () => {
 // ─── usageToTokens ─────────────────────────────────────────────────────────
 
 describe('usageToTokens', () => {
+  test('does not invent a breakdown when provider component costs do not reconcile', () => {
+    expect(
+      usageToTokens({
+        input: 10,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 15,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 },
+      }).costBreakdown
+    ).toBeUndefined();
+  });
+
   test('maps Pi Usage to Archon TokenUsage', () => {
     const usage = {
       input: 100,
@@ -143,6 +156,7 @@ describe('usageToTokens', () => {
       cacheWrite: 5,
       total: 175,
       cost: 0.003,
+      costBreakdown: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0 },
     });
   });
 });

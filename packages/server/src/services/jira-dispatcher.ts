@@ -5,6 +5,7 @@ import { basename, join } from 'path';
 import { createLogger, getArchonHome } from '@archon/paths';
 import { execFileAsync, fetchWithRefLockRetry, toRepoPath } from '@archon/git';
 import * as codebaseDb from '@archon/core/db/codebases';
+import * as jiraAnnouncementDb from '@archon/core/db/jira-announcements';
 import * as jiraQueueDb from '@archon/core/db/jira-queue';
 import * as userDb from '@archon/core/db/users';
 import * as workflowDb from '@archon/core/db/workflows';
@@ -15,6 +16,7 @@ import { getTerminalRecord } from '@archon/workflows/terminal-record';
 import type { ServerResourceStartHost } from './resource-start-hosting';
 import { JiraClient, jiraCredentialsFromEnv, type JiraIssue } from './jira-client';
 import { resumeWorkflowRunFromServer } from './workflow-resume-service';
+import type { WorkflowRun, WorkflowRunStatus } from '@archon/workflows/schemas/workflow-run';
 
 const log = createLogger('jira-dispatcher');
 const SCAN_INTERVAL_MS = 5_000;
@@ -51,6 +53,139 @@ export interface JiraQueueSnapshot {
   activeJobs: number;
   concurrency: number;
   lastError: string | null;
+}
+
+export interface JiraResumeEligibility {
+  eligible: boolean;
+  runId: string | null;
+  runStatus: WorkflowRunStatus | null;
+  reason: string | null;
+}
+
+export interface JiraResumeDependencies {
+  getJob: (jobId: string) => Promise<jiraQueueDb.JiraJobRecord | null>;
+  reconcileLineage: (jobId: string) => Promise<string | null>;
+  getRun: (runId: string) => Promise<WorkflowRun | null>;
+  isOwnerAnswering: (runId: string) => Promise<boolean>;
+  failRun: (
+    runId: string,
+    error: string,
+    metadata: { exitReason: 'not_finalized' }
+  ) => Promise<void>;
+  resumeRun: (run: WorkflowRun, actorUserId?: string) => Promise<boolean>;
+  updateJob: (
+    jobId: string,
+    updates: Parameters<typeof jiraQueueDb.updateJiraJob>[1]
+  ) => Promise<void>;
+}
+
+export async function jiraResumeEligibility(
+  codebaseId: string,
+  jobId: string,
+  deps: JiraResumeDependencies
+): Promise<JiraResumeEligibility> {
+  const job = await deps.getJob(jobId);
+  if (job?.codebaseId !== codebaseId) {
+    return {
+      eligible: false,
+      runId: null,
+      runStatus: null,
+      reason: 'Jira job was not found.',
+    };
+  }
+  const runId = await deps.reconcileLineage(job.id);
+  if (!runId) {
+    return {
+      eligible: false,
+      runId: null,
+      runStatus: null,
+      reason: 'This Jira job has no workflow run to resume.',
+    };
+  }
+  const run = await deps.getRun(runId);
+  if (!run) {
+    return {
+      eligible: false,
+      runId,
+      runStatus: null,
+      reason: 'The effective workflow run no longer exists.',
+    };
+  }
+  if (run.status === 'failed') {
+    return { eligible: true, runId, runStatus: run.status, reason: null };
+  }
+  if (run.status === 'running') {
+    if (await deps.isOwnerAnswering(run.id)) {
+      return {
+        eligible: false,
+        runId,
+        runStatus: run.status,
+        reason: 'The effective workflow run still has an active execution owner.',
+      };
+    }
+    return { eligible: true, runId, runStatus: run.status, reason: null };
+  }
+  return {
+    eligible: false,
+    runId,
+    runStatus: run.status,
+    reason: `Cannot resume a Jira workflow in '${run.status}' status.`,
+  };
+}
+
+export async function resumeJiraJob(
+  codebaseId: string,
+  jobId: string,
+  actorUserId: string | undefined,
+  deps: JiraResumeDependencies
+): Promise<jiraQueueDb.JiraJobRecord> {
+  const job = await deps.getJob(jobId);
+  if (job?.codebaseId !== codebaseId) throw new Error('Jira job was not found.');
+
+  const eligibility = await jiraResumeEligibility(codebaseId, job.id, deps);
+  if (!eligibility.eligible || !eligibility.runId) {
+    throw new Error(eligibility.reason ?? 'This Jira job cannot be resumed.');
+  }
+  let run = await deps.getRun(eligibility.runId);
+  if (!run) throw new Error('The effective workflow run no longer exists.');
+
+  if (run.status === 'running') {
+    // Eligibility's owner handshake can race with a new owner. The conditional
+    // terminal write and the shared resume claim provide the final exclusion.
+    await deps.failRun(
+      run.id,
+      'Execution owner stopped before the workflow finalized. The run can be resumed.',
+      { exitReason: 'not_finalized' }
+    );
+    run = await deps.getRun(run.id);
+    if (!run) throw new Error('The effective workflow run no longer exists.');
+  }
+  if (run.status !== 'failed') {
+    throw new Error(`Cannot resume a Jira workflow in '${run.status}' status.`);
+  }
+  const resumed = await deps.resumeRun(run, actorUserId);
+  if (!resumed) throw new Error('The effective Jira workflow run could not be resumed.');
+
+  const metadata = { ...job.metadata, effectiveRunId: run.id };
+  await deps.updateJob(job.id, {
+    status: 'running',
+    workflowRunId: run.id,
+    conflictDetail: null,
+    completionPending: false,
+    clearCompleted: true,
+    metadata,
+  });
+  return (
+    (await deps.getJob(job.id)) ?? {
+      ...job,
+      status: 'running',
+      workflowRunId: run.id,
+      conflictDetail: null,
+      completionPending: false,
+      completedAt: null,
+      metadata,
+    }
+  );
 }
 
 const MAX_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -326,6 +461,104 @@ async function totalJobCost(jobId: string): Promise<number | null> {
     }
   }
   return found ? total : null;
+}
+
+interface JiraAnnouncementTelemetry {
+  runtimeMs: number | null;
+  costUsd: number | null;
+  diff: { files: number; additions: number; deletions: number } | null;
+}
+
+export function jiraAnnouncementText(
+  issueKey: string,
+  transition: string,
+  telemetry: JiraAnnouncementTelemetry
+): string {
+  const runtime =
+    telemetry.runtimeMs === null
+      ? 'unknown'
+      : `${Math.max(0, Math.round(telemetry.runtimeMs / 1000)).toString()} seconds`;
+  const cost = telemetry.costUsd === null ? 'unknown' : `$${telemetry.costUsd.toFixed(2)}`;
+  const diff = telemetry.diff
+    ? `${telemetry.diff.files.toString()} files, plus ${telemetry.diff.additions.toString()}, minus ${telemetry.diff.deletions.toString()}`
+    : 'unknown';
+  return `${issueKey} moved to ${transition}. Runtime ${runtime}. Cost ${cost}. Diff ${diff}.`;
+}
+
+async function announcementTelemetry(
+  job: jiraQueueDb.JiraJobRecord,
+  diff?: JiraAnnouncementTelemetry['diff']
+): Promise<JiraAnnouncementTelemetry> {
+  const runs = await jiraQueueDb.listJiraJobRuns(job.id);
+  let runtimeMs = 0;
+  let hasRuntime = false;
+  for (const attachment of runs) {
+    const run = await workflowDb.getWorkflowRun(attachment.workflowRunId);
+    if (!run?.completed_at) continue;
+    const elapsed = new Date(run.completed_at).getTime() - new Date(run.started_at).getTime();
+    if (Number.isFinite(elapsed) && elapsed >= 0) {
+      runtimeMs += elapsed;
+      hasRuntime = true;
+    }
+  }
+  return {
+    runtimeMs: hasRuntime ? runtimeMs : null,
+    costUsd: await totalJobCost(job.id),
+    diff: diff ?? null,
+  };
+}
+
+async function recordTransitionAnnouncement(
+  job: jiraQueueDb.JiraJobRecord,
+  dedupeKey: string,
+  transition: string,
+  diff?: JiraAnnouncementTelemetry['diff']
+): Promise<void> {
+  const telemetry = await announcementTelemetry(job, diff);
+  await jiraAnnouncementDb.recordJiraAnnouncement({
+    jobId: job.id,
+    dedupeKey,
+    issueKey: job.issueKey,
+    transition,
+    text: jiraAnnouncementText(job.issueKey, transition, telemetry),
+  });
+}
+
+async function recordErrorAnnouncement(
+  job: jiraQueueDb.JiraJobRecord,
+  dedupeKey: string,
+  detail: string
+): Promise<void> {
+  await jiraAnnouncementDb.recordJiraAnnouncement({
+    jobId: job.id,
+    dedupeKey,
+    issueKey: job.issueKey,
+    transition: 'error',
+    text: `${job.issueKey} failed. ${detail.slice(0, 240)}`,
+  });
+}
+
+async function pullRequestDiff(prUrl: string | null): Promise<JiraAnnouncementTelemetry['diff']> {
+  if (!prUrl) return null;
+  const { repository, number } = parsePullRequestUrl(prUrl);
+  const pullRequest = await ghJson<{
+    additions: number;
+    deletions: number;
+    changedFiles: number;
+  }>([
+    'pr',
+    'view',
+    number.toString(),
+    '--repo',
+    repository,
+    '--json',
+    'additions,deletions,changedFiles',
+  ]);
+  return {
+    files: pullRequest.changedFiles,
+    additions: pullRequest.additions,
+    deletions: pullRequest.deletions,
+  };
 }
 
 async function upsertPullRequestCostComment(
@@ -718,6 +951,16 @@ export class JiraDispatcher {
       config.config.workflow_states.done_via ?? [],
       doneStatus
     );
+    await recordTransitionAnnouncement(
+      job,
+      `merged:${pullRequest.mergeCommit?.oid ?? pullRequest.mergedAt}`,
+      doneStatus,
+      {
+        files: pullRequest.changedFiles,
+        additions: pullRequest.additions,
+        deletions: pullRequest.deletions,
+      }
+    );
 
     const cost = await totalJobCost(job.id);
     const implementation =
@@ -771,6 +1014,33 @@ export class JiraDispatcher {
     });
     await this.monitorJobs();
     return (await jiraQueueDb.getJiraJob(job.id)) ?? job;
+  }
+
+  async getResumeEligibility(codebaseId: string, jobId: string): Promise<JiraResumeEligibility> {
+    return jiraResumeEligibility(codebaseId, jobId, this.resumeDependencies());
+  }
+
+  async resumeJob(
+    codebaseId: string,
+    jobId: string,
+    actorUserId?: string
+  ): Promise<jiraQueueDb.JiraJobRecord> {
+    const job = await resumeJiraJob(codebaseId, jobId, actorUserId, this.resumeDependencies());
+    this.snapshots.delete(codebaseId);
+    return job;
+  }
+
+  private resumeDependencies(): JiraResumeDependencies {
+    return {
+      getJob: jiraQueueDb.getJiraJob,
+      reconcileLineage: jiraQueueDb.reconcileJiraJobRunLineage,
+      getRun: workflowDb.getWorkflowRun,
+      isOwnerAnswering: isRunOwnerAnswering,
+      failRun: workflowDb.failWorkflowRun,
+      resumeRun: (run, actorUserId) =>
+        resumeWorkflowRunFromServer(run, actorUserId, { kind: 'headless' }),
+      updateJob: jiraQueueDb.updateJiraJob,
+    };
   }
 
   async retryFailedCorrection(
@@ -1199,6 +1469,7 @@ export class JiraDispatcher {
           conflictDetail: null,
           clearCompleted: true,
         });
+        await recordTransitionAnnouncement(job, `queued:${effectiveRunId}`, 'QUEUED');
         continue;
       }
       if (run.status === 'running' || run.status === 'paused') {
@@ -1207,6 +1478,11 @@ export class JiraDispatcher {
           conflictDetail: null,
           clearCompleted: true,
         });
+        await recordTransitionAnnouncement(
+          job,
+          `${run.status}:${effectiveRunId}`,
+          run.status.toUpperCase()
+        );
         continue;
       }
       const config = await jiraQueueDb.getJiraConfig(job.codebaseId);
@@ -1247,6 +1523,12 @@ export class JiraDispatcher {
             config.config.workflow_states.ready_for_manual_test_via ?? [],
             config.config.workflow_states.ready_for_manual_test
           );
+          await recordTransitionAnnouncement(
+            job,
+            `completed:${effectiveRunId}`,
+            config.config.workflow_states.ready_for_manual_test,
+            await pullRequestDiff(effectivePrUrl)
+          );
           effects.jiraTransition = true;
         } catch (error) {
           // Delivery success is terminal even when the Jira workflow has no path
@@ -1279,6 +1561,7 @@ export class JiraDispatcher {
         });
       } else {
         const detail = terminal?.error ?? `Workflow ended with status '${run.status}'.`;
+        await recordErrorAnnouncement(job, `failed:${effectiveRunId}`, detail);
         await client.addCommentOnce(
           job.issueKey,
           `[archon:failed:${job.id}:${effectiveRunId}]`,

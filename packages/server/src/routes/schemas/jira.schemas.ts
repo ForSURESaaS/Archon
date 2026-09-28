@@ -124,6 +124,12 @@ export const jiraIssueSchema = z
         branchName: z.string().nullable(),
         prUrl: z.string().nullable(),
         conflictDetail: z.string().nullable(),
+        resumeEligibility: z.object({
+          eligible: z.boolean(),
+          runId: z.string().nullable(),
+          runStatus: z.string().nullable(),
+          reason: z.string().nullable(),
+        }),
         telemetry: z
           .object({
             runStatus: z.string(),
@@ -230,5 +236,13 @@ export const jiraReconcileResponseSchema = z
     status: z.string(),
   })
   .openapi('JiraReconcileResponse');
+
+export const jiraResumeResponseSchema = z
+  .object({
+    jobId: z.string(),
+    runId: z.string(),
+    status: z.string(),
+  })
+  .openapi('JiraResumeResponse');
 
 export type JiraQueueConfigInput = z.infer<typeof jiraQueueConfigSchema>;

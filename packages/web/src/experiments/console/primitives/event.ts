@@ -63,6 +63,14 @@ export interface NodeTransitionEvent extends RunEventBase {
   outputPreview: string | null;
   model: string | null;
   costUsd: number | null;
+  tokens: {
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    cachePartial?: true;
+    costBreakdown?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  } | null;
   stopReason: string | null;
   numTurns: number | null;
 }
@@ -129,6 +137,39 @@ function readNumberOrNull(obj: Record<string, unknown>, key: string): number | n
   return typeof v === 'number' ? v : null;
 }
 
+function readNodeTokens(data: Record<string, unknown>): NodeTransitionEvent['tokens'] {
+  const raw = data.tokens;
+  if (raw === null || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  const valid = (item: unknown): item is number =>
+    typeof item === 'number' && Number.isFinite(item) && item >= 0;
+  if (!valid(value.input) || !valid(value.output)) return null;
+  const cost = value.costBreakdown;
+  const breakdown =
+    cost !== null && typeof cost === 'object' ? (cost as Record<string, unknown>) : null;
+  return {
+    input: value.input,
+    output: value.output,
+    ...(valid(value.cacheRead) ? { cacheRead: value.cacheRead } : {}),
+    ...(valid(value.cacheWrite) ? { cacheWrite: value.cacheWrite } : {}),
+    ...(value.cachePartial === true ? { cachePartial: true as const } : {}),
+    ...(breakdown &&
+    valid(breakdown.input) &&
+    valid(breakdown.output) &&
+    valid(breakdown.cacheRead) &&
+    valid(breakdown.cacheWrite)
+      ? {
+          costBreakdown: {
+            input: breakdown.input,
+            output: breakdown.output,
+            cacheRead: breakdown.cacheRead,
+            cacheWrite: breakdown.cacheWrite,
+          },
+        }
+      : {}),
+  };
+}
+
 function readRequestedModel(data: Record<string, unknown>): string | null {
   const binding = data.binding;
   if (binding === null || typeof binding !== 'object') return null;
@@ -192,6 +233,7 @@ export function toRunEvent(raw: RawWorkflowEvent): RunEvent {
       outputPreview: output === null ? null : output.slice(0, 300),
       model: readRequestedModel(data),
       costUsd: readNumberOrNull(data, 'cost_usd'),
+      tokens: readNodeTokens(data),
       stopReason: readStringOrNull(data, 'stop_reason'),
       numTurns: readNumberOrNull(data, 'num_turns'),
     };

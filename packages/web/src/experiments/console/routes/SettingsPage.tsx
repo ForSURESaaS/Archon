@@ -5,6 +5,7 @@ import { AgentsPanel } from '../components/AgentsPanel';
 import { AssistantConfigPanel } from '../components/AssistantConfigPanel';
 import { SystemPanel } from '../components/SystemPanel';
 import { GithubIdentityPanel } from '../components/GithubIdentityPanel';
+import { AudioSettingsPanel } from '../components/AudioSettingsPanel';
 
 /**
  * Global (installation-wide) console "AI Settings" — sectioned: Model Tiers (the
@@ -25,6 +26,7 @@ export function SettingsPage(): ReactElement {
           <AliasesPanel />
           <AgentsPanel />
           <AssistantConfigPanel />
+          <AudioSettingsPanel />
           <SystemPanel />
           <GithubIdentityPanel />
         </div>

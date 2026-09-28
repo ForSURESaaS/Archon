@@ -38,7 +38,7 @@ import type {
   RawAliasesConfig,
   RawTiersConfig,
 } from './config-types';
-import { workflowContinuationConfigSchema } from './config-types';
+import { AUDIO_VOICES, workflowContinuationConfigSchema } from './config-types';
 import { createLogger } from '@archon/paths';
 import {
   isRegisteredProvider,
@@ -225,6 +225,11 @@ const DEFAULT_CONFIG_CONTENT = `# Archon Global Configuration
 #     additionalDirectories:
 #       - /absolute/path/to/other/repo
 
+# Ephemeral speech synthesis (Azure credentials are environment-only)
+# audio:
+#   enabled: false
+#   voice: coral
+
 # Model tier presets (usable as model: small / medium / large)
 # tiers:
 #   large: { provider: claude, model: opus }
@@ -306,6 +311,29 @@ function validateWorkflowContinuationConfig(parsed: unknown, configPath: string)
     throw new InvalidConfigError('Invalid workflows config', configPath, issues);
   }
   config.workflows = result.data;
+}
+
+function validateAudioConfig(parsed: unknown, configPath: string): void {
+  if (!isConfigRecord(parsed) || !('audio' in parsed) || parsed.audio === undefined) return;
+  const label = 'Invalid audio config';
+  if (!isConfigRecord(parsed.audio)) {
+    throw new InvalidConfigError(label, configPath, "'audio' must be an object.");
+  }
+  const audio = parsed.audio;
+  if (audio.enabled !== undefined && typeof audio.enabled !== 'boolean') {
+    throw new InvalidConfigError(label, configPath, "'audio.enabled' must be a boolean.");
+  }
+  if (
+    audio.voice !== undefined &&
+    (typeof audio.voice !== 'string' ||
+      !AUDIO_VOICES.includes(audio.voice as (typeof AUDIO_VOICES)[number]))
+  ) {
+    throw new InvalidConfigError(
+      label,
+      configPath,
+      `'audio.voice' must be one of: ${AUDIO_VOICES.join(', ')}.`
+    );
+  }
 }
 
 function isConfigRecord(value: unknown): value is Record<string, unknown> {
@@ -394,6 +422,7 @@ async function readGlobalConfigOrDegrade(configPath: string): Promise<GlobalConf
     const parsed = parseYaml(content);
     validateWorkflowContinuationConfig(parsed, configPath);
     validateModelBindingConfig(parsed, configPath);
+    validateAudioConfig(parsed, configPath);
     return (parsed as GlobalConfig | null) ?? {};
   } catch (error) {
     const err = error as { code?: string };
@@ -520,6 +549,12 @@ function getDefaults(): MergedConfig {
     botName: 'Archon',
     assistant: providers.find(p => p.builtIn)?.id ?? 'claude',
     assistants: registeredAssistants,
+    audio: {
+      enabled: true,
+      provider: 'azure-openai',
+      model: 'gpt-audio-mini-global',
+      voice: 'coral',
+    },
     streaming: {
       telegram: 'stream',
       discord: 'batch',
@@ -648,6 +683,14 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
   }
 
   result.assistants = mergeAssistantDefaults(result.assistants, global.assistants);
+  if (global.audio) {
+    result.audio = {
+      enabled: global.audio.enabled ?? result.audio?.enabled ?? true,
+      provider: global.audio.provider ?? result.audio?.provider ?? 'azure-openai',
+      model: global.audio.model ?? result.audio?.model ?? 'gpt-audio-mini-global',
+      voice: global.audio.voice ?? result.audio?.voice ?? 'coral',
+    };
+  }
 
   result.aliases = mergeAliases(result.aliases, global.aliases);
   result.tiers = mergeTiers(result.tiers, global.tiers);
@@ -912,6 +955,13 @@ export async function updateGlobalConfig(
       }
     }
 
+    if (updates.audio) {
+      merged.audio = {
+        ...(isConfigRecord(current.audio) ? current.audio : {}),
+        ...updates.audio,
+      };
+    }
+
     if (updates.streaming) {
       merged.streaming = { ...current.streaming, ...updates.streaming };
     }
@@ -943,6 +993,7 @@ export async function updateGlobalConfig(
     // config load, and a bad block already on disk must be repaired, not kept.
     validateWorkflowContinuationConfig(merged, configPath);
     validateModelBindingConfig(merged, configPath);
+    validateAudioConfig(merged, configPath);
     validateAssistantDefaults(merged, configPath);
 
     // Serialize to YAML and write
@@ -1005,6 +1056,12 @@ export function toSafeConfig(config: MergedConfig): SafeConfig {
     botName: config.botName,
     assistant: config.assistant,
     assistants: toSafeAssistantDefaults(config.assistants),
+    audio: {
+      enabled: config.audio?.enabled ?? true,
+      provider: config.audio?.provider ?? 'azure-openai',
+      model: config.audio?.model ?? 'gpt-audio-mini-global',
+      voice: config.audio?.voice ?? 'coral',
+    },
     streaming: {
       telegram: config.streaming.telegram,
       discord: config.streaming.discord,

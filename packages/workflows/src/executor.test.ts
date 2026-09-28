@@ -4475,6 +4475,73 @@ describe('telemetry wiring', () => {
 // ───────────────────────────────────────────────────────────────────────────
 
 describe('hydrateResumableRun', () => {
+  it('refuses to claim a no-change assertion failure with cached implementation', async () => {
+    const candidate = makeRun({
+      id: 'failed-implementation',
+      status: 'failed',
+      metadata: {
+        error:
+          "DAG workflow 'archon-deliver' completed with failures: " +
+          "'impl__assert-changed': Script node failed: implement changed no content outside .archon/",
+      },
+    });
+    const store = makeStore({
+      getDagResumeSnapshot: mock(async () => ({
+        completedNodeOutputs: new Map([['impl__implement', { output: '{"done":true}' }]]),
+        fanOutSnapshots: new Map(),
+        unresolvedNodeStarts: new Set<string>(),
+        costUsd: 0,
+      })),
+    });
+
+    await expect(hydrateResumableRun(makeDeps(store), candidate)).rejects.toThrow(
+      'Start a fresh implementation attempt on the preserved checkout'
+    );
+    expect(store.resumeWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it('refuses a delivery when its implementation child failed the no-change assertion', async () => {
+    const child = makeRun({
+      id: 'implementation-child',
+      status: 'failed',
+      metadata: {
+        error:
+          "DAG workflow 'archon-implement' completed with failures: " +
+          "'assert-changed': Script node failed: implement changed no content outside .archon/",
+      },
+    });
+    const store = makeStore({
+      findChildRuns: mock(async () => [child]),
+      getDagResumeSnapshot: mock(async id => ({
+        completedNodeOutputs:
+          id === child.id
+            ? new Map([['implement', { output: '{"done":true}' }]])
+            : new Map([['setup', { output: 'ready' }]]),
+        fanOutSnapshots: new Map(),
+        unresolvedNodeStarts: new Set<string>(),
+        costUsd: 0,
+      })),
+    });
+
+    await expect(
+      hydrateResumableRun(makeDeps(store), makeRun({ status: 'failed' }))
+    ).rejects.toThrow('Start a fresh implementation attempt on the preserved checkout');
+    expect(store.resumeWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it('permits an unrelated failure with cached implementation', async () => {
+    const candidate = makeRun({ status: 'failed', metadata: { error: 'network timeout' } });
+    const store = makeStore({
+      getDagResumeSnapshot: mock(async () => ({
+        completedNodeOutputs: new Map([['impl__implement', { output: '{"done":true}' }]]),
+        fanOutSnapshots: new Map(),
+        unresolvedNodeStarts: new Set<string>(),
+        costUsd: 0,
+      })),
+    });
+    expect(await inspectResumableRun(makeDeps(store), candidate)).not.toBeNull();
+  });
+
   it('inspects resumable state without claiming the run', async () => {
     const candidate = makeRun({ id: 'read-only-prior', status: 'paused' });
     const priorNodes = new Map([['n1', { output: 'out1' }]]);

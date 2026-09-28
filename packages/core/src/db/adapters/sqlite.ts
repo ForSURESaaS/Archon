@@ -908,6 +908,18 @@ export class SqliteAdapter implements IDatabase {
         PRIMARY KEY (job_id, workflow_run_id)
       );
 
+      CREATE TABLE IF NOT EXISTS remote_agent_jira_announcements (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        job_id TEXT NOT NULL REFERENCES remote_agent_jira_jobs(id) ON DELETE CASCADE,
+        dedupe_key TEXT NOT NULL,
+        issue_key TEXT NOT NULL,
+        transition TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        acknowledged_at TEXT,
+        UNIQUE(job_id, dedupe_key)
+      );
+
       CREATE TABLE IF NOT EXISTS remote_agent_start_receipts (
         id TEXT PRIMARY KEY,
         source_instance_id TEXT NOT NULL,
@@ -1032,6 +1044,7 @@ export class SqliteAdapter implements IDatabase {
       CREATE INDEX IF NOT EXISTS idx_jira_jobs_codebase_status ON remote_agent_jira_jobs(codebase_id, status);
       CREATE INDEX IF NOT EXISTS idx_jira_jobs_workflow_run ON remote_agent_jira_jobs(workflow_run_id);
       CREATE INDEX IF NOT EXISTS idx_jira_job_runs_job ON remote_agent_jira_job_runs(job_id, attached_at);
+      CREATE INDEX IF NOT EXISTS idx_jira_announcements_pending ON remote_agent_jira_announcements(acknowledged_at, created_at);
       CREATE INDEX IF NOT EXISTS idx_workflow_events_run_id ON remote_agent_workflow_events(workflow_run_id);
       CREATE INDEX IF NOT EXISTS idx_workflow_events_type ON remote_agent_workflow_events(event_type);
       CREATE INDEX IF NOT EXISTS idx_workflow_events_created_at ON remote_agent_workflow_events(created_at);

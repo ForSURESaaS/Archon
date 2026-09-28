@@ -77,6 +77,7 @@ function scratch(initial: Record<string, string> = { 'a.txt': 'a\n', 'b.txt': 'b
 }
 
 interface Verdict {
+  done?: boolean;
   green?: boolean;
   redCause?: string;
   summary?: string;
@@ -96,6 +97,7 @@ async function guard(
       ...process.env,
       ARTIFACTS_DIR: s.artifacts,
       BASE_BRANCH: '',
+      INPUTS_DONE: String(verdict.done ?? true),
       INPUTS_GREEN: String(verdict.green ?? false),
       INPUTS_RED_CAUSE: verdict.redCause ?? '',
       INPUTS_SUMMARY: verdict.summary ?? '',
@@ -115,13 +117,45 @@ async function guard(
 }
 
 describe('implement assert-changed guard over engine checkout observations', () => {
-  test('a clean start that changes nothing is refused', async () => {
+  test('done red with no change or declared check failure gets an actionable refusal', async () => {
     const s = scratch();
     const baseline = await s.observe();
-    const verdict = await guard(s, baseline);
+    const verdict = await guard(s, baseline, {
+      done: true,
+      green: false,
+      redCause: '',
+      summary: 'A projection rule needs an operator decision; no files were edited.',
+    });
     expect(verdict.passed).toBe(false);
-    expect(verdict.output).toContain('changed no content');
+    expect(verdict.output).toContain('declared done with no new content');
+    expect(verdict.output).toContain('report that blocker to the operator');
+    expect(verdict.output).not.toContain('changed no content outside .archon/');
   });
+
+  test('real implementation changes still pass with an unexplained red verdict', async () => {
+    const s = scratch();
+    const baseline = await s.observe();
+    s.write('a.txt', 'implemented\n');
+    const verdict = await guard(s, baseline, { done: true, green: false, redCause: '' });
+    expect(verdict.passed).toBe(true);
+    expect(verdict.output).toContain('changed since this implement invocation started');
+  });
+
+  test.each(['inherited', 'environment'] as const)(
+    'no-change %s red with evidence retains the honest-decline path',
+    async redCause => {
+      const s = scratch();
+      const baseline = await s.observe();
+      const verdict = await guard(s, baseline, {
+        done: true,
+        green: false,
+        redCause,
+        summary: 'The named lint check failed before this invocation; see the validation report.',
+      });
+      expect(verdict.passed).toBe(true);
+      expect(verdict.output).toContain(`remaining red is declared ${redCause}`);
+    }
+  );
 
   // The original defect: the guard compared against HEAD, so dirt that existed before
   // implement started passed as new work with no implementation activity at all.

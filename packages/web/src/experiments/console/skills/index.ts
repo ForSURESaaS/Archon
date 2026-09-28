@@ -21,5 +21,6 @@ export * from './github';
 export * from './providerKeys';
 export * from './jira';
 export * from './budget';
+export * from './audio';
 
 export { HttpError } from '../lib/http';

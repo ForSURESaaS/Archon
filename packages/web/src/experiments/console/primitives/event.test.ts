@@ -49,6 +49,31 @@ describe('toRunEvent — node transitions', () => {
     expect(e.numTurns).toBe(1);
   });
 
+  test('node_completed exposes priced input, cached input, and output independently', () => {
+    const e = toRunEvent(
+      raw({
+        event_type: 'node_completed',
+        data: {
+          tokens: {
+            input: 1100,
+            output: 100,
+            cacheRead: 800,
+            cacheWrite: 100,
+            costBreakdown: { input: 0.2, output: 0.2, cacheRead: 0.05, cacheWrite: 0.05 },
+          },
+        },
+      })
+    );
+    if (e.kind !== 'node_transition') throw new Error('unreachable');
+    expect(e.tokens).toEqual({
+      input: 1100,
+      output: 100,
+      cacheRead: 800,
+      cacheWrite: 100,
+      costBreakdown: { input: 0.2, output: 0.2, cacheRead: 0.05, cacheWrite: 0.05 },
+    });
+  });
+
   test('node_completed truncates a long output preview to 300 chars', () => {
     const long = 'x'.repeat(500);
     const e = toRunEvent(raw({ event_type: 'node_completed', data: { node_output: long } }));

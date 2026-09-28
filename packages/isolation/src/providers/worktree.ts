@@ -5,6 +5,7 @@
  */
 
 import { createHash } from 'crypto';
+import { constants } from 'fs';
 import { access, rm } from 'fs/promises';
 import { isAbsolute, join, normalize as normalizePath, resolve } from 'path';
 
@@ -16,6 +17,7 @@ import {
   getCanonicalRepoPath,
   getCurrentBranchStrict,
   getDefaultRemote,
+  getGitCheckoutIdentity,
   getWorktreeBase,
   listWorktrees,
   mkdirAsync,
@@ -36,6 +38,7 @@ import { isInsideArchonWorkspaces, isPathInside } from '@archon/paths';
 import type { BranchName, RepoPath, WorktreeInfo } from '@archon/git';
 import { recordCleanupFailure } from '../errors';
 import { copyWorktreeFiles } from '../worktree-copy';
+import { deinitCleanWorktreeSubmodules } from '../worktree-submodule-cleanup';
 import type {
   DestroyResult,
   IIsolationProvider,
@@ -208,6 +211,10 @@ export class WorktreeProvider implements IIsolationProvider {
       return existing;
     }
 
+    // Git writes objects, refs, and worktree administration in the common Git
+    // directory, which may be outside this checkout (submodules and linked worktrees).
+    await this.preflightGitMetadata(request.canonicalRepoPath);
+
     // Create new worktree (re-uses the already-loaded repoConfig — no double load).
     const creation = await this.createWorktree(request, worktreePath, branchName, repoConfig);
     if (creation.kind === 'adopted') {
@@ -300,12 +307,19 @@ export class WorktreeProvider implements IIsolationProvider {
 
     // Only attempt worktree removal if path exists
     if (pathExists) {
+      // Ordinary cleanup must not force past a dirty or partially populated
+      // submodule. Deinit only clean checkouts; Git rechecks before removal.
+      const deinitialized =
+        !options?.force && !options?.removeLocked
+          ? await deinitCleanWorktreeSubmodules(worktreePath)
+          : false;
       const gitArgs = ['-C', repoPath, 'worktree', 'remove'];
-      // Git refuses a locked worktree even with one `--force`; the second one is
-      // its own opt-in for that, so a lock still protects every other caller.
+      // Git refuses submodule-bearing worktrees even after deinit. The single
+      // --force is used ONLY after the worktree/submodules passed the explicit
+      // clean check; Git still refuses locked worktrees (which need two flags).
       if (options?.removeLocked) {
         gitArgs.push('--force', '--force');
-      } else if (options?.force) {
+      } else if (options?.force || deinitialized) {
         gitArgs.push('--force');
       }
       gitArgs.push(worktreePath);
@@ -315,6 +329,13 @@ export class WorktreeProvider implements IIsolationProvider {
         result.worktreeRemoved = true;
       } catch (error) {
         if (!this.isWorktreeMissingError(error)) {
+          if (deinitialized) {
+            throw new Error(
+              `Cannot remove worktree at ${worktreePath} after clean submodule deinitialization. ` +
+                'Git still refused removal; inspect the checkout and preserve any changes before retrying.',
+              { cause: error }
+            );
+          }
           throw error;
         }
         getLog().debug({ worktreePath }, 'worktree_already_removed');
@@ -831,6 +852,28 @@ export class WorktreeProvider implements IIsolationProvider {
         'Another run may be creating it right now — retry once that run ends. ' +
         `Otherwise remove it with \`git worktree remove --force --force ${worktreePath}\`.`
     );
+  }
+
+  private async preflightGitMetadata(repoPath: RepoPath): Promise<void> {
+    const { commonGitDir } = await getGitCheckoutIdentity(repoPath);
+    for (const path of [commonGitDir, join(commonGitDir, 'objects')]) {
+      try {
+        await access(path, constants.W_OK);
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException;
+        if (err.code !== 'EACCES' && err.code !== 'EPERM' && err.code !== 'EROFS') {
+          throw error;
+        }
+        throw new Error(
+          `Git metadata is not writable at ${path} for the Archon process ` +
+            `(uid ${process.getuid?.() ?? 'unknown'}, gid ${process.getgid?.() ?? 'unknown'}). ` +
+            'Grant the runtime user write access to the repository Git metadata; for a Docker ' +
+            'bind mount, configure ARCHON_REPO_GID to the host repository group ID and ensure ' +
+            'that group can write this directory. Do not make the repository world-writable.',
+          { cause: error }
+        );
+      }
+    }
   }
 
   /**

@@ -50,23 +50,18 @@ function formatTokens(value: number): string {
   );
 }
 
-function modelBreakdownTitle(
-  costs: readonly { model: string; costUsd: number; calls: number }[],
-  total: number
-): string {
-  const attributed = costs.reduce((sum, item) => sum + item.costUsd, 0);
-  return [
-    ...costs
-      .slice()
-      .sort((a, b) => b.costUsd - a.costUsd)
-      .map(
-        item =>
-          `${item.model}: ${formatCost(item.costUsd)} across ${String(item.calls)} call${item.calls === 1 ? '' : 's'}`
-      ),
-    ...(total - attributed > 0.000001
-      ? [`Unattributed/provider roll-up: ${formatCost(total - attributed)}`]
-      : []),
-  ].join('\n');
+function formatComponent(usd: number | null): string {
+  if (usd === null) return 'not reported';
+  if (usd > 0 && usd < 0.0001) return `$${usd.toFixed(8)}`;
+  return formatCost(usd);
+}
+
+function formatDetailedTokens(value: number): string {
+  return new Intl.NumberFormat('en').format(value);
+}
+
+export function cacheReadRate(grossInput: number, cacheRead: number): number | null {
+  return grossInput > 0 ? cacheRead / grossInput : null;
 }
 
 export function CostsPage(): ReactElement {
@@ -105,8 +100,9 @@ export function CostsPage(): ReactElement {
   // Token telemetry is independent of USD cost availability. Pi and Codex can
   // report usage without reporting a price, so include every top-level request.
   const { tokensIn, tokensOut, cacheRead } = aggregateTokenUsage(requests);
-  const cacheBase = tokensIn + cacheRead;
-  const cacheRate = cacheBase > 0 ? cacheRead / cacheBase : null;
+  // tokensIn is gross input and already includes cache reads; adding cacheRead
+  // again understated the hit rate by double-counting cached tokens.
+  const cacheRate = cacheReadRate(tokensIn, cacheRead);
   const completed = runs.filter(run => run.status === 'completed').length;
   const successfulCost = runs
     .filter(run => run.status === 'completed')
@@ -123,19 +119,33 @@ export function CostsPage(): ReactElement {
   }, [runs]);
   const maxWorkflowCost = Math.max(0, ...byWorkflow.map(item => item.cost));
   const byModel = useMemo(() => {
-    const groups = new Map<string, { costUsd: number; calls: number }>();
+    const groups = new Map<string, NonNullable<Run['modelCosts']>[number]>();
     for (const run of runs) {
       for (const item of run.modelCosts ?? []) {
-        const prior = groups.get(item.model) ?? { costUsd: 0, calls: 0 };
+        const prior = groups.get(item.model);
+        if (!prior) {
+          groups.set(item.model, { ...item });
+          continue;
+        }
+        const addCost = (left: number | null, right: number | null): number | null =>
+          left === null || right === null ? null : left + right;
         groups.set(item.model, {
+          model: item.model,
           costUsd: prior.costUsd + item.costUsd,
           calls: prior.calls + item.calls,
+          tokensIn: prior.tokensIn + item.tokensIn,
+          tokensOut: prior.tokensOut + item.tokensOut,
+          cacheRead: prior.cacheRead + item.cacheRead,
+          cacheWrite: prior.cacheWrite + item.cacheWrite,
+          inputCostUsd: addCost(prior.inputCostUsd, item.inputCostUsd),
+          outputCostUsd: addCost(prior.outputCostUsd, item.outputCostUsd),
+          cacheReadCostUsd: addCost(prior.cacheReadCostUsd, item.cacheReadCostUsd),
+          cacheWriteCostUsd: addCost(prior.cacheWriteCostUsd, item.cacheWriteCostUsd),
+          partial: prior.partial || item.partial,
         });
       }
     }
-    return [...groups.entries()]
-      .map(([model, value]) => ({ model, ...value }))
-      .sort((a, b) => b.costUsd - a.costUsd);
+    return [...groups.values()].sort((a, b) => b.costUsd - a.costUsd);
   }, [runs]);
   const dailySpend = useMemo(() => {
     const groups = new Map<string, number>();
@@ -179,7 +189,7 @@ export function CostsPage(): ReactElement {
           <div className="grid gap-4">
             <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {[
-                ['Total spend', formatCost(total)],
+                ['Provider-reported spend', formatCost(total)],
                 ['Average / request', formatCost(average)],
                 ['Cost coverage', `${String(runs.length)}/${String(requests.length)} requests`],
                 [
@@ -333,22 +343,66 @@ export function CostsPage(): ReactElement {
             <section className="rounded-xl border border-border bg-surface p-4">
               <h2 className="mb-4 text-sm font-semibold">Spend by model</h2>
               {byModel.length > 0 ? (
-                <div className="grid gap-2" title={modelBreakdownTitle(byModel, total)}>
-                  {byModel.map(item => (
-                    <div
-                      key={item.model}
-                      className="flex items-center justify-between gap-3 text-xs"
-                    >
-                      <span className="truncate font-mono">{item.model}</span>
-                      <span className="font-mono tabular-nums text-text-secondary">
-                        {formatCost(item.costUsd)} · {item.calls} call
-                        {item.calls === 1 ? '' : 's'}
-                      </span>
+                <div className="overflow-x-auto">
+                  <div className="min-w-[1280px] text-xs">
+                    <div className="grid grid-cols-[minmax(240px,2fr)_repeat(9,minmax(95px,1fr))] gap-3 border-b border-border pb-2 text-text-tertiary">
+                      <span>Model / calls</span>
+                      <span>Input tokens</span>
+                      <span>Cache read tokens</span>
+                      <span>Cache write tokens</span>
+                      <span>Uncached input USD</span>
+                      <span>Cache read USD</span>
+                      <span>Cache write USD</span>
+                      <span>Output tokens</span>
+                      <span>Output USD</span>
+                      <span>Total USD</span>
                     </div>
-                  ))}
-                  <span className="text-xs text-text-tertiary">
-                    Hover for the complete per-model price breakdown.
-                  </span>
+                    {byModel.map(item => (
+                      <div
+                        key={item.model}
+                        className="grid grid-cols-[minmax(240px,2fr)_repeat(9,minmax(95px,1fr))] gap-3 border-b border-border/50 py-2 font-mono tabular-nums last:border-0"
+                      >
+                        <span className="break-all">
+                          {item.model}{' '}
+                          <span className="text-text-tertiary">· {item.calls} billed nodes</span>
+                        </span>
+                        <span>
+                          {formatDetailedTokens(item.tokensIn)}
+                          {item.partial ? '*' : ''}
+                        </span>
+                        <span>
+                          {formatDetailedTokens(item.cacheRead)}
+                          {item.partial ? '*' : ''}
+                        </span>
+                        <span>
+                          {formatDetailedTokens(item.cacheWrite)}
+                          {item.partial ? '*' : ''}
+                        </span>
+                        <span>{formatComponent(item.inputCostUsd)}</span>
+                        <span>{formatComponent(item.cacheReadCostUsd)}</span>
+                        <span>{formatComponent(item.cacheWriteCostUsd)}</span>
+                        <span>
+                          {formatDetailedTokens(item.tokensOut)}
+                          {item.partial ? '*' : ''}
+                        </span>
+                        <span>{formatComponent(item.outputCostUsd)}</span>
+                        <span className="font-semibold">{formatCost(item.costUsd)}</span>
+                      </div>
+                    ))}
+                    {total - byModel.reduce((sum, item) => sum + item.costUsd, 0) > 0.000001 ? (
+                      <div className="py-2 text-text-secondary">
+                        Unattributed/provider roll-up:{' '}
+                        {formatCost(total - byModel.reduce((sum, item) => sum + item.costUsd, 0))}
+                      </div>
+                    ) : null}
+                    <p className="pt-2 text-text-tertiary">
+                      Input tokens include cache reads and writes. Uncached input, cache reads,
+                      cache writes, and output use separate provider-priced USD components. * Some
+                      token/cache usage was not reported. Counts are billed nodes, not individual
+                      provider API calls. Historic component costs are “not reported”, not
+                      estimated.
+                    </p>
+                  </div>
                 </div>
               ) : (
                 <span className="text-sm text-text-secondary">
@@ -448,7 +502,7 @@ export function CostsPage(): ReactElement {
                         </span>
                         <span
                           className="text-right font-mono font-semibold tabular-nums"
-                          title={modelBreakdownTitle(run.modelCosts ?? [], run.costUsd ?? 0)}
+                          title="Provider-reported total USD; see per-model components above"
                         >
                           {formatCost(run.costUsd ?? 0)}
                         </span>

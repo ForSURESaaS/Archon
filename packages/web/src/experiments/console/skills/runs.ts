@@ -70,20 +70,60 @@ export async function listCostRuns(codebaseId: string, after?: string): Promise<
     runs.map(async run => {
       if (run.parentRunId !== null || run.costUsd === null) return run;
       const detail = await getRun(run.id);
-      const byModel = new Map<string, { costUsd: number; calls: number }>();
+      const byModel = new Map<string, NonNullable<Run['modelCosts']>[number]>();
       for (const event of detail.events) {
-        if (event.kind !== 'node_transition' || event.model === null || event.costUsd === null)
+        if (
+          event.kind !== 'node_transition' ||
+          (event.transition !== 'completed' && event.transition !== 'failed') ||
+          event.model === null ||
+          event.costUsd === null
+        )
           continue;
-        const prior = byModel.get(event.model) ?? { costUsd: 0, calls: 0 };
+        const prior = byModel.get(event.model) ?? {
+          model: event.model,
+          costUsd: 0,
+          calls: 0,
+          tokensIn: 0,
+          tokensOut: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          inputCostUsd: 0,
+          outputCostUsd: 0,
+          cacheReadCostUsd: 0,
+          cacheWriteCostUsd: 0,
+          partial: false,
+        };
+        const tokens = event.tokens;
+        const costs = tokens?.costBreakdown;
         byModel.set(event.model, {
+          ...prior,
           costUsd: prior.costUsd + event.costUsd,
           calls: prior.calls + 1,
+          tokensIn: prior.tokensIn + (tokens?.input ?? 0),
+          tokensOut: prior.tokensOut + (tokens?.output ?? 0),
+          cacheRead: prior.cacheRead + (tokens?.cacheRead ?? 0),
+          cacheWrite: prior.cacheWrite + (tokens?.cacheWrite ?? 0),
+          inputCostUsd:
+            prior.inputCostUsd !== null && costs ? prior.inputCostUsd + costs.input : null,
+          outputCostUsd:
+            prior.outputCostUsd !== null && costs ? prior.outputCostUsd + costs.output : null,
+          cacheReadCostUsd:
+            prior.cacheReadCostUsd !== null && costs
+              ? prior.cacheReadCostUsd + costs.cacheRead
+              : null,
+          cacheWriteCostUsd:
+            prior.cacheWriteCostUsd !== null && costs
+              ? prior.cacheWriteCostUsd + costs.cacheWrite
+              : null,
+          partial:
+            prior.partial ||
+            tokens === null ||
+            tokens.cachePartial === true ||
+            tokens.cacheRead === undefined ||
+            tokens.cacheWrite === undefined,
         });
       }
-      return {
-        ...run,
-        modelCosts: [...byModel.entries()].map(([model, value]) => ({ model, ...value })),
-      };
+      return { ...run, modelCosts: [...byModel.values()] };
     })
   );
 }

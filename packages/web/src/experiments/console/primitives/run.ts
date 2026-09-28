@@ -28,7 +28,20 @@ export interface Run {
   tokensOut: number | null;
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
-  modelCosts?: { model: string; costUsd: number; calls: number }[];
+  modelCosts?: {
+    model: string;
+    costUsd: number;
+    calls: number;
+    tokensIn: number;
+    tokensOut: number;
+    cacheRead: number;
+    cacheWrite: number;
+    inputCostUsd: number | null;
+    outputCostUsd: number | null;
+    cacheReadCostUsd: number | null;
+    cacheWriteCostUsd: number | null;
+    partial: boolean;
+  }[];
   /** DB id of the conversation this run belongs to. */
   conversationId: string | null;
   /**
@@ -293,7 +306,19 @@ export function toRun(raw: RawWorkflowRun): Run {
     tokensOut: readUsage(raw.metadata, 'total_tokens_out'),
     cacheReadTokens: readUsage(raw.metadata, 'total_cache_read_tokens'),
     cacheWriteTokens: readUsage(raw.metadata, 'total_cache_write_tokens'),
-    modelCosts: raw.model_costs ?? [],
+    modelCosts:
+      raw.model_costs?.map(item => ({
+        ...item,
+        tokensIn: 0,
+        tokensOut: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        inputCostUsd: null,
+        outputCostUsd: null,
+        cacheReadCostUsd: null,
+        cacheWriteCostUsd: null,
+        partial: true,
+      })) ?? [],
     activeNodes,
     currentNode: activeNodes.length === 1 ? (activeNodes[0] ?? null) : null,
     lastTool: null,

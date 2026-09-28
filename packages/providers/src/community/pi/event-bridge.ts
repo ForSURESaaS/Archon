@@ -110,6 +110,22 @@ export function usageToTokens(usage: Usage): TokenUsage {
     cacheWrite: usage.cacheWrite,
     total: usage.totalTokens,
     cost: usage.cost.total,
+    ...(Math.abs(
+      usage.cost.total -
+        (usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite)
+    ) < 1e-7 &&
+    [usage.cost.input, usage.cost.output, usage.cost.cacheRead, usage.cost.cacheWrite].every(
+      cost => Number.isFinite(cost) && cost >= 0
+    )
+      ? {
+          costBreakdown: {
+            input: usage.cost.input,
+            output: usage.cost.output,
+            cacheRead: usage.cost.cacheRead,
+            cacheWrite: usage.cost.cacheWrite,
+          },
+        }
+      : {}),
   };
 }
 

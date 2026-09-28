@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { Run } from '../primitives/run';
-import { aggregateTokenUsage, selectCostRuns } from './CostsPage';
+import { aggregateTokenUsage, cacheReadRate, selectCostRuns } from './CostsPage';
 
 function run(overrides: Partial<Run> = {}): Run {
   return {
@@ -60,6 +60,11 @@ describe('selectCostRuns', () => {
 
     expect(result.requests.map(item => item.id)).toEqual(['run-1']);
   });
+});
+
+test('cache read rate divides cached tokens by gross input without counting them twice', () => {
+  expect(cacheReadRate(1000, 800)).toBe(0.8);
+  expect(cacheReadRate(0, 0)).toBeNull();
 });
 
 describe('aggregateTokenUsage', () => {

@@ -61,7 +61,7 @@ Do not open pull requests. Do not push, or comment on a pull request, unless the
 
 ## If you cannot do the work
 
-If the work is impossible or too ambiguous to build responsibly — it names files that don't exist, a prerequisite is missing, two requirements contradict — say so plainly and stop: declare `done: true, green: false` with the blocker in `summary`, and make no speculative edits. A clear refusal is a good outcome; code built on a broken premise is not.
+If the work is impossible or too ambiguous to build responsibly — it names files that don't exist, a prerequisite is missing, two requirements contradict — say so plainly and stop: declare `done: true, green: false` with the blocker in `summary`, and make no speculative edits. A clear refusal is a good outcome; code built on a broken premise is not. When nothing changed, this is an actionable decline, not a successful delivery: the no-change guard will stop it. Do not invent a failing check or label a work-item blocker `inherited` or `environment` to bypass that guard.
 
 ## Report
 

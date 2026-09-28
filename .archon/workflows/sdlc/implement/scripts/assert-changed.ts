@@ -274,6 +274,7 @@ function decide(): Decision {
   // The loop's verdict, bound by the workflow (`with:`): green as canonical boolean
   // text ("true"/"false"), the declared cause of any red, and the summary that carries
   // the evidence for it. `baseline` is the implement invocation's checkout start.
+  const done = trimmed(process.env.INPUTS_DONE);
   const green = trimmed(process.env.INPUTS_GREEN);
   // Certified at the loop's own node: `red_cause` is an enum on its output_format,
   // so the value here is a member or the empty string, never something to re-check.
@@ -329,6 +330,19 @@ function decide(): Decision {
   if (green !== 'true' && passesRed(declaredCause) && summary !== '') {
     return {
       shown: `no new changes this run; the remaining red is declared ${declaredCause}, not introduced`,
+    };
+  }
+
+  if (done === 'true' && green === 'false' && declaredCause === '' && unknownReason === undefined) {
+    return {
+      refusal:
+        'Implementation declared done with no new content and no explained failing check ' +
+        '(green=false, red_cause=unknown). The summary alone cannot certify a ' +
+        'completed implementation or turn an unimplemented work item into a successful ' +
+        'delivery. Continue implementing and validating if the work is feasible; if a ' +
+        'missing requirement or external decision truly blocks it, report that blocker ' +
+        'to the operator for an actionable decision. Do not relabel it inherited or ' +
+        'environment without a named failing check and evidence.',
     };
   }
 

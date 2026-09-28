@@ -58,6 +58,12 @@ export interface JiraIssue {
     branchName: string | null;
     prUrl: string | null;
     conflictDetail: string | null;
+    resumeEligibility: {
+      eligible: boolean;
+      runId: string | null;
+      runStatus: string | null;
+      reason: string | null;
+    };
     telemetry: {
       runStatus: string;
       startedAt: string;
@@ -179,6 +185,15 @@ export function retryJiraCorrection(
   jobId: string
 ): Promise<{ found: number; dispatched: boolean; runId: string | null }> {
   return requestJson(`${base(projectId)}/jobs/${encodeURIComponent(jobId)}/retry-correction`, {
+    method: 'POST',
+  });
+}
+
+export function resumeJiraJob(
+  projectId: string,
+  jobId: string
+): Promise<{ jobId: string; runId: string | null; status: string }> {
+  return requestJson(`${base(projectId)}/jobs/${encodeURIComponent(jobId)}/resume`, {
     method: 'POST',
   });
 }

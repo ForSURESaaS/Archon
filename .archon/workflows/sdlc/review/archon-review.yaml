@@ -52,25 +52,11 @@ returns: publish
 outcome_field: ready
 
 nodes:
-  # A continuation round is one whose caller handed it the prior round's report.
-  # Deliver's rounds pass the path of a pointer this workflow's own synthesize
-  # node certified, but `prior_report` is also a declared input an outside
-  # caller can fill with a path from an earlier run, which no pointer covers.
-  # That boundary is checked here, once, because a continuation that cannot
-  # read the report it continues from would review nothing and say it reviewed
-  # everything. The node also turns the input into the routable fact the lenses
-  # gate on: an include's inputs are substituted as text at load time and cannot
-  # be compared in a `when:`.
+  # Resolve the prior report once, before any reviewer reads it. Inputs are
+  # data, not shell source: a literal $ADOPTED_RUN_DIR is expanded here using
+  # the engine's adopted-run env, then the resolved path is bound to reviewers.
   - id: mode
-    script: |
-      const prior = (process.env.INPUTS_PRIOR_REPORT ?? '').trim();
-      const exists = prior !== '' && (() => { try { return require('node:fs').statSync(prior).isFile(); } catch { return false; } })();
-      if (prior !== '' && !exists) {
-        console.error(`Previous review report does not exist: ${prior}`);
-        process.exitCode = 1;
-      } else {
-        console.log(JSON.stringify({ continuation: prior !== '' }));
-      }
+    script: resolve-prior-report
     runtime: bun
     with:
       prior_report: "$INPUTS.prior_report"
@@ -78,10 +64,13 @@ nodes:
       type: object
       properties:
         continuation: { type: boolean }
-      required: [continuation]
+        prior_report: { type: string }
+      required: [continuation, prior_report]
 
   - id: scope
     command: review-scope
+    with:
+      prior_report: "$mode.output.prior_report"
     context: fresh
     depends_on: [mode]
     output_format:
@@ -185,6 +174,8 @@ nodes:
   # it stays here until something does.
   - id: synthesize
     command: review-synthesize
+    with:
+      prior_report: "$mode.output.prior_report"
     context: fresh
     output_type: review-report
     depends_on: [scope, review-complete]

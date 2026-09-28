@@ -100,6 +100,7 @@ describe('WorktreeProvider', () => {
   let findWorktreeByBranchSpy: Mock<typeof git.findWorktreeByBranch>;
   let getCurrentBranchStrictSpy: Mock<typeof git.getCurrentBranchStrict>;
   let getCanonicalRepoPathSpy: Mock<typeof git.getCanonicalRepoPath>;
+  let getGitCheckoutIdentitySpy: Mock<typeof git.getGitCheckoutIdentity>;
   let verifyWorktreeOwnershipSpy: Mock<typeof git.verifyWorktreeOwnership>;
   let unlockWorktreeSpy: Mock<typeof git.unlockWorktree>;
   let readWorktreeLockSpy: Mock<typeof git.readWorktreeLock>;
@@ -116,6 +117,7 @@ describe('WorktreeProvider', () => {
     findWorktreeByBranchSpy = spyOn(git, 'findWorktreeByBranch');
     getCurrentBranchStrictSpy = spyOn(git, 'getCurrentBranchStrict');
     getCanonicalRepoPathSpy = spyOn(git, 'getCanonicalRepoPath');
+    getGitCheckoutIdentitySpy = spyOn(git, 'getGitCheckoutIdentity');
     verifyWorktreeOwnershipSpy = spyOn(git, 'verifyWorktreeOwnership');
     unlockWorktreeSpy = spyOn(git, 'unlockWorktree');
     readWorktreeLockSpy = spyOn(git, 'readWorktreeLock');
@@ -133,6 +135,11 @@ describe('WorktreeProvider', () => {
     findWorktreeByBranchSpy.mockResolvedValue(null);
     getCurrentBranchStrictSpy.mockResolvedValue(null);
     getCanonicalRepoPathSpy.mockImplementation(async path => git.toRepoPath(path));
+    getGitCheckoutIdentitySpy.mockResolvedValue({
+      gitDir: '/workspace/repo/.git',
+      commonGitDir: '/workspace/repo/.git',
+      linkedWorktree: false,
+    });
     verifyWorktreeOwnershipSpy.mockResolvedValue(undefined);
     unlockWorktreeSpy.mockResolvedValue(undefined);
     // Nothing is mid-setup by default: no worktree carries Archon's setup lock.
@@ -173,6 +180,7 @@ describe('WorktreeProvider', () => {
     findWorktreeByBranchSpy.mockRestore();
     getCurrentBranchStrictSpy.mockRestore();
     getCanonicalRepoPathSpy.mockRestore();
+    getGitCheckoutIdentitySpy.mockRestore();
     verifyWorktreeOwnershipSpy.mockRestore();
     unlockWorktreeSpy.mockRestore();
     readWorktreeLockSpy.mockRestore();
@@ -303,6 +311,35 @@ describe('WorktreeProvider', () => {
   });
 
   describe('create', () => {
+    test('rejects unwritable common Git objects before fetching or checkout', async () => {
+      const commonGitDir = '/mounted/repo/.git/modules/submodule';
+      getGitCheckoutIdentitySpy.mockResolvedValue({
+        gitDir: commonGitDir,
+        commonGitDir,
+        linkedWorktree: false,
+      });
+      mockAccess.mockImplementation(async (path: unknown): Promise<void> => {
+        if (path === join(commonGitDir, 'objects')) {
+          const error = new Error('Permission denied') as NodeJS.ErrnoException;
+          error.code = 'EACCES';
+          throw error;
+        }
+      });
+      const request: IsolationRequest = {
+        codebaseId: 'cb-123',
+        canonicalRepoPath: git.toRepoPath('/workspace/repo'),
+        workflowType: 'issue',
+        identifier: '42',
+      };
+
+      await expect(provider.create(request)).rejects.toThrow(
+        `Git metadata is not writable at ${join(commonGitDir, 'objects')}`
+      );
+      expect(syncWorkspaceSpy).not.toHaveBeenCalled();
+      expect(mkdirSpy).not.toHaveBeenCalled();
+      expect(execSpy).not.toHaveBeenCalled();
+    });
+
     const baseRequest: IsolationRequest = {
       codebaseId: 'cb-123',
       canonicalRepoPath: git.toRepoPath('/workspace/repo'),
@@ -481,7 +518,10 @@ describe('WorktreeProvider', () => {
       worktreeExistsSpy
         .mockResolvedValueOnce(false) // No existing checkout to adopt.
         .mockResolvedValueOnce(true); // Git registered the attempted checkout before failing.
-      mockAccess.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      mockAccess.mockImplementation(async (path: unknown, mode?: unknown) => {
+        if (mode !== undefined) return;
+        throw Object.assign(new Error(`ENOENT: ${String(path)}`), { code: 'ENOENT' });
+      });
 
       const request: IsolationRequest = {
         ...baseRequest,
@@ -3146,7 +3186,10 @@ describe('WorktreeProvider', () => {
       const enoentError = Object.assign(new Error('ENOENT: no such file or directory'), {
         code: 'ENOENT',
       });
-      accessSpy.mockRejectedValue(enoentError);
+      accessSpy.mockImplementation(async (_path, mode) => {
+        if (mode !== undefined) return; // Git metadata preflight uses W_OK.
+        throw enoentError;
+      });
       rmSpy.mockResolvedValue(undefined);
     });
 
@@ -3296,12 +3339,15 @@ describe('WorktreeProvider', () => {
       const worktreePath = git.toWorktreePath('/workspace/worktrees/repo/issue-999');
 
       getCanonicalRepoPathSpy.mockResolvedValue(git.toRepoPath('/workspace/repo'));
-      // First access check: path exists
-      accessSpy.mockResolvedValueOnce(undefined);
+      // Path remains present across the existence checks; .gitmodules is absent.
+      accessSpy.mockImplementation(async (path, mode) => {
+        if (mode !== undefined) return;
+        if (String(path).endsWith('.gitmodules')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        }
+      });
       // git worktree remove succeeds
       execSpy.mockResolvedValueOnce({ stdout: '', stderr: '' });
-      // Directory still exists after git remove (directoryExists check)
-      accessSpy.mockResolvedValueOnce(undefined);
       // rm fails with permission denied
       rmSpy.mockRejectedValue(
         Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
@@ -3348,17 +3394,20 @@ describe('WorktreeProvider', () => {
       const worktreePath = git.toWorktreePath('/workspace/worktrees/repo/issue-999');
 
       getCanonicalRepoPathSpy.mockResolvedValue(git.toRepoPath('/workspace/repo'));
-      // First access check: path exists
-      accessSpy.mockResolvedValueOnce(undefined);
+      // Path remains present across the existence checks; .gitmodules is absent.
+      accessSpy.mockImplementation(async (path, mode) => {
+        if (mode !== undefined) return;
+        if (String(path).endsWith('.gitmodules')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        }
+      });
       // git worktree remove fails with "is not a working tree" (matches isWorktreeMissingError)
       execSpy.mockRejectedValueOnce(
         Object.assign(new Error('fatal: /path is not a working tree'), {
           stderr: 'is not a working tree',
         })
       );
-      // Directory still exists (directoryExists check after git failure)
-      accessSpy.mockResolvedValueOnce(undefined);
-
+      // Directory still exists (directoryExists check after git failure).
       await provider.destroy(worktreePath);
 
       // Should still clean up the orphan directory
@@ -3374,9 +3423,11 @@ describe('WorktreeProvider', () => {
       };
 
       // Simulate permission error when checking directory
-      accessSpy.mockRejectedValue(
-        Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
-      );
+      const denied = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      accessSpy.mockImplementation(async (_path, mode) => {
+        if (mode !== undefined) return; // Preflight succeeds; directory check fails.
+        throw denied;
+      });
 
       await expect(provider.create(request)).rejects.toThrow('Failed to check directory');
     });
@@ -3396,7 +3447,10 @@ describe('WorktreeProvider', () => {
       };
 
       // Directory doesn't exist initially (no orphan directory to clean)
-      accessSpy.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      accessSpy.mockImplementation(async (_path, mode) => {
+        if (mode !== undefined) return; // Git metadata remains writable.
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
 
       // First call: worktreeExists returns false (not adopted)
       // Second call (in cleanup): worktreeExists returns true (orphan exists)
@@ -3445,7 +3499,10 @@ describe('WorktreeProvider', () => {
       };
 
       // Directory doesn't exist initially (no orphan directory to clean)
-      accessSpy.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      accessSpy.mockImplementation(async (_path, mode) => {
+        if (mode !== undefined) return; // Git metadata remains writable.
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
 
       // First call: worktreeExists returns false (not adopted)
       // Second call (in cleanup): worktreeExists returns true (orphan exists)

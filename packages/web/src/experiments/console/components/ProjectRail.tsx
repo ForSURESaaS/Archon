@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState, type ReactElement } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router';
-import { Settings, PenTool, type LucideIcon } from 'lucide-react';
+import { Settings, PenTool, Volume2, VolumeX, type LucideIcon } from 'lucide-react';
 import { SessionMenu } from '@/components/auth/SessionMenu';
 import { ProjectRow } from './ProjectRow';
 import { EnvVarsDialog } from './EnvVarsDialog';
@@ -8,6 +8,7 @@ import { useEntity, invalidate } from '../store/cache';
 import { K } from '../store/keys';
 import * as skill from '../skills';
 import type { Project } from '../primitives/project';
+import { useAudio } from './AudioProvider';
 
 interface ProjectRailProps {
   onAddProject: () => void;
@@ -104,6 +105,7 @@ function RailNavLink({
  * project URL. We extract the project id from the pathname directly.
  */
 export function ProjectRail({ onAddProject }: ProjectRailProps): ReactElement {
+  const audio = useAudio();
   const navigate = useNavigate();
   const location = useLocation();
   const scope = extractProjectId(location.pathname) ?? 'all';
@@ -331,6 +333,39 @@ export function ProjectRail({ onAddProject }: ProjectRailProps): ReactElement {
 
       {/* Console navigation */}
       <div className="flex flex-col gap-0.5 border-t border-border px-2.5 py-2">
+        <div className="flex items-center gap-2 rounded-[10px] px-2.5 py-1.5">
+          <button
+            type="button"
+            aria-label={audio.muted ? 'Unmute announcements' : 'Mute announcements'}
+            title={audio.muted ? 'Unmute announcements' : 'Mute announcements'}
+            onClick={() => {
+              audio.setMuted(!audio.muted);
+            }}
+            className="rounded p-1 text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+          >
+            {audio.muted ? (
+              <VolumeX aria-hidden className="h-4 w-4" />
+            ) : (
+              <Volume2 aria-hidden className="h-4 w-4" />
+            )}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={audio.volume}
+            disabled={audio.muted}
+            aria-label="Announcement volume"
+            onChange={event => {
+              audio.setVolume(Number(event.target.value));
+            }}
+            className="min-w-0 flex-1 accent-accent disabled:opacity-40"
+          />
+          <span className="w-8 text-right font-mono text-[10px] text-text-tertiary">
+            {Math.round(audio.volume * 100)}
+          </span>
+        </div>
         <RailNavLink
           to="/console/builder"
           icon={PenTool}

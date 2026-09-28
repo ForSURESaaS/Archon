@@ -221,6 +221,26 @@ export function mergeTokenUsage(usages: readonly TokenUsage[]): TokenUsage | und
   if (partial && (merged.cacheRead !== undefined || merged.cacheWrite !== undefined)) {
     merged.cachePartial = true;
   }
+  // A component is authoritative only when every priced contribution supplies it.
+  // Never pretend the missing part of an older/provider-only total cost is zero.
+  const priced = usages
+    .map(usage => usage.costBreakdown)
+    .filter((cost): cost is NonNullable<TokenUsage['costBreakdown']> => cost !== undefined);
+  if (
+    priced.length === usages.length &&
+    priced.every(cost =>
+      [cost.input, cost.output, cost.cacheRead, cost.cacheWrite].every(
+        value => Number.isFinite(value) && value >= 0
+      )
+    )
+  ) {
+    merged.costBreakdown = {
+      input: priced.reduce((sum, cost) => sum + cost.input, 0),
+      output: priced.reduce((sum, cost) => sum + cost.output, 0),
+      cacheRead: priced.reduce((sum, cost) => sum + cost.cacheRead, 0),
+      cacheWrite: priced.reduce((sum, cost) => sum + cost.cacheWrite, 0),
+    };
+  }
   return merged;
 }
 

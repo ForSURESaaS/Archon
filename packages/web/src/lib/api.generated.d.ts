@@ -2890,6 +2890,140 @@ export interface paths {
     };
     trace?: never;
   };
+  '/api/config/audio': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** Update speech synthesis configuration */
+    patch: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          'application/json': components['schemas']['UpdateAudioConfigBody'];
+        };
+      };
+      responses: {
+        /** @description Updated configuration */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['ConfigResponse'];
+          };
+        };
+        /** @description Invalid request body, or the resulting config is invalid */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    trace?: never;
+  };
+  '/api/audio/speech': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Synthesize ephemeral speech with Azure OpenAI */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          'application/json': components['schemas']['SpeechSynthesisBody'];
+        };
+      };
+      responses: {
+        /** @description Synthesized MP3 audio */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'audio/mpeg': string;
+          };
+        };
+        /** @description Web authentication required */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Audio synthesis is disabled */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Azure speech synthesis is unavailable */
+        503: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/config/tiers': {
     parameters: {
       query?: never;
@@ -3545,6 +3679,55 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/codebases/{id}/jira/jobs/{jobId}/resume': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          jobId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Effective Jira workflow run resumed */
+        202: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraResumeResponse'];
+          };
+        };
+        /** @description Jira job could not be resumed */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              error: string;
+            };
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/codebases/{id}/jira/jobs/{jobId}/retry-correction': {
     parameters: {
       query?: never;
@@ -3766,6 +3949,132 @@ export interface paths {
         };
         /** @description PR comments could not be checked */
         409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              error: string;
+            };
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/jira/announcements': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: {
+      parameters: {
+        query?: {
+          includeAcknowledged?: 'true' | 'false';
+          limit?: number;
+        };
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Jira transition announcements */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraAnnouncementList'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/jira/audio-logs': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: {
+      parameters: {
+        query?: {
+          includeAcknowledged?: 'true' | 'false';
+          limit?: number;
+        };
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Jira transition announcements */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraAnnouncementList'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/jira/announcements/{id}/ack': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Acknowledged Jira transition announcement */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['JiraAnnouncement'];
+          };
+        };
+        /** @description Announcement not found */
+        404: {
           headers: {
             [name: string]: unknown;
           };
@@ -4121,6 +4430,12 @@ export interface components {
                   cachePartial?: true;
                   total?: number;
                   cost?: number;
+                  costBreakdown?: {
+                    input: number;
+                    output: number;
+                    cacheRead: number;
+                    cacheWrite: number;
+                  };
                 };
               }
             | {
@@ -4390,6 +4705,7 @@ export interface components {
       model: string;
       /** @enum {string} */
       effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | 'persistent';
+      enabled?: boolean;
     };
     UpdateUserTiersBody: {
       tiers: {
@@ -5394,6 +5710,7 @@ export interface components {
       assistants: {
         [key: string]: components['schemas']['ProviderDefaults'];
       };
+      audio: components['schemas']['AudioConfig'];
       streaming: {
         /** @enum {string} */
         telegram: 'stream' | 'batch';
@@ -5419,6 +5736,15 @@ export interface components {
     ProviderDefaults: {
       [key: string]: unknown;
     };
+    AudioConfig: {
+      enabled: boolean;
+      /** @enum {string} */
+      provider: 'azure-openai';
+      model: string;
+      voice: components['schemas']['AudioVoice'];
+    };
+    /** @enum {string} */
+    AudioVoice: 'alloy' | 'ash' | 'ballad' | 'coral' | 'echo' | 'sage' | 'shimmer' | 'verse';
     TiersConfig: {
       small?: components['schemas']['TierEntry'];
       medium?: components['schemas']['TierEntry'];
@@ -5429,6 +5755,16 @@ export interface components {
       assistants?: {
         [key: string]: components['schemas']['ProviderDefaults'];
       };
+    };
+    UpdateAudioConfigBody: {
+      enabled?: boolean;
+      /** @enum {string} */
+      provider?: 'azure-openai';
+      model?: string;
+      voice?: components['schemas']['AudioVoice'];
+    };
+    SpeechSynthesisBody: {
+      input: string;
     };
     UpdateTiersBody: {
       tiers: {
@@ -5731,6 +6067,11 @@ export interface components {
       runId: string | null;
       status: string;
     };
+    JiraResumeResponse: {
+      jobId: string;
+      runId: string;
+      status: string;
+    };
     JiraPrCommentsResponse: {
       found: number;
       dispatched: boolean;
@@ -5789,6 +6130,12 @@ export interface components {
         branchName: string | null;
         prUrl: string | null;
         conflictDetail: string | null;
+        resumeEligibility: {
+          eligible: boolean;
+          runId: string | null;
+          runStatus: string | null;
+          reason: string | null;
+        };
         telemetry: {
           runStatus: string;
           startedAt: string;
@@ -5796,6 +6143,7 @@ export interface components {
           tokensIn: number;
           tokensOut: number;
           costUsd: number;
+          requestCount: number;
           models: {
             model: string;
             tokensIn: number;
@@ -5822,6 +6170,20 @@ export interface components {
       jobId: string;
       runId: string | null;
       status: string;
+    };
+    JiraAnnouncementList: {
+      announcements: components['schemas']['JiraAnnouncement'][];
+    };
+    JiraAnnouncement: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      jobId: string;
+      issueKey: string;
+      transition: string;
+      text: string;
+      createdAt: string;
+      acknowledgedAt: string | null;
     };
     DailyBudgetStatus: {
       dayUtc: string;

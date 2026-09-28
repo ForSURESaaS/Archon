@@ -22,7 +22,7 @@ import { isAbsolute, join } from 'path';
 import { tmpdir } from 'os';
 import * as git from '@archon/git';
 import { RATE_LIMIT_MAX_RETRIES } from './executor-shared';
-
+import * as bundledDefaults from './defaults/bundled-defaults';
 // --- Mock logger (MUST come before imports of modules under test) ---
 
 const mockLogFn = mock((_data: unknown, _message?: string): void => {});
@@ -3192,7 +3192,7 @@ describe('executeDagWorkflow -- script node injection hardening (#2115)', () => 
         string[],
         { env: NodeJS.ProcessEnv },
       ];
-      expect(cmd).toBe('bun');
+      expect(cmd).toBe(process.execPath);
       // Source is byte-identical to the author's body — the payload never appears in it.
       expect(args).toEqual(['--no-env-file', '-e', 'console.log(process.env.ARGUMENTS)']);
       expect(args.join(' ')).not.toContain('execSync');
@@ -3366,7 +3366,7 @@ describe('executeDagWorkflow -- script node injection hardening (#2115)', () => 
       );
 
       const scriptCall = execSpy.mock.calls.find(
-        c => (c[0] as string) === 'bun' && (c[1] as string[]).includes('-e')
+        c => (c[0] as string) === process.execPath && (c[1] as string[]).includes('-e')
       ) as [string, string[], unknown] | undefined;
       expect(scriptCall).toBeDefined();
       // Raw (unquoted) node-output splice is intact — the direct-assignment pattern.
@@ -17535,6 +17535,98 @@ describe('executeDagWorkflow -- script nodes', () => {
     expect(mockSendQueryDag.mock.calls.length).toBe(0);
   });
 
+  it.each(['inline', 'named'] as const)(
+    '%s bun script launches when the subprocess PATH has no bun',
+    async source => {
+      const mockDeps = createMockDeps();
+      const platform = createMockPlatform();
+      const workflowRun = makeWorkflowRun(`script-no-path-${source}`);
+      let script = 'console.log("resolved bun")';
+      if (source === 'named') {
+        const scriptsDir = join(testDir, '.archon', 'scripts');
+        await mkdir(scriptsDir, { recursive: true });
+        await writeFile(join(scriptsDir, 'resolved.ts'), script);
+        script = 'resolved';
+      }
+
+      await executeDagWorkflow(
+        dagOptions({
+          deps: mockDeps,
+          platform,
+          cwd: testDir,
+          workflow: {
+            name: 'script-no-path',
+            nodes: [{ id: 'run-bun', kind: 'exec', script, runtime: 'bun' }],
+          },
+          workflowRun,
+          config: { ...minimalConfig, envVars: { PATH: '' } },
+        })
+      );
+
+      const events = (mockDeps.store.createWorkflowEvent as ReturnType<typeof mock>).mock.calls;
+      const completed = events.find(
+        call =>
+          (call[0] as { event_type: string; step_name: string }).event_type === 'node_completed' &&
+          (call[0] as { step_name: string }).step_name === 'run-bun'
+      );
+      expect(completed).toBeDefined();
+      expect((completed![0] as { data: { node_output: string } }).data.node_output).toBe(
+        'resolved bun'
+      );
+    }
+  );
+
+  it('compiled host script resolves bun on PATH rather than launching the Archon executable', async () => {
+    const binarySpy = spyOn(bundledDefaults, 'isBinaryBuild').mockReturnValue(true);
+    const execSpy = spyOn(git, 'execFileAsync').mockResolvedValue({ stdout: 'ok\n', stderr: '' });
+    try {
+      await executeDagWorkflow(
+        dagOptions({
+          deps: createMockDeps(),
+          cwd: testDir,
+          workflow: {
+            name: 'compiled-script',
+            nodes: [{ id: 'run-bun', kind: 'exec', runtime: 'bun', script: 'console.log("ok")' }],
+          },
+          workflowRun: makeWorkflowRun('compiled-script-run'),
+        })
+      );
+      expect(execSpy.mock.calls.some(([cmd, args]) => cmd === 'bun' && args.includes('-e'))).toBe(
+        true
+      );
+    } finally {
+      execSpy.mockRestore();
+      binarySpy.mockRestore();
+    }
+  });
+
+  it('container script dispatches bun from the runner PATH, not the host executable', async () => {
+    const execSpy = spyOn(git, 'execFileAsync').mockResolvedValue({
+      stdout: 'container bun\n',
+      stderr: '',
+    });
+    try {
+      await executeDagWorkflow(
+        dagOptions({
+          deps: createMockDeps(),
+          cwd: testDir,
+          workflow: {
+            name: 'container-script',
+            nodes: [{ id: 'run-bun', kind: 'exec', runtime: 'bun', script: 'console.log("ok")' }],
+          },
+          workflowRun: makeWorkflowRun('container-script-run'),
+          execContext: { kind: 'container', containerId: 'runner-container' },
+        })
+      );
+      const calls = nodeDockerCalls(execSpy.mock.calls);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.[1]).toContain('bun');
+      expect(calls[0]?.[1]).not.toContain(process.execPath);
+    } finally {
+      execSpy.mockRestore();
+    }
+  });
+
   it('inline bun script output available for downstream substitution', async () => {
     const mockDeps = createMockDeps();
     const platform = createMockPlatform();
@@ -18450,7 +18542,7 @@ describe('executeDagWorkflow -- script nodes', () => {
     );
 
     expect(execSpy).toHaveBeenCalledWith(
-      'bun',
+      process.execPath,
       ['--no-env-file', '-e', 'console.log("ok")'],
       expect.objectContaining({
         env: expect.objectContaining({ MY_SECRET: 'abc123' }),
@@ -21780,7 +21872,7 @@ describe('executeDagWorkflow -- loop_group node', () => {
       );
 
       const scriptCall = execSpy.mock.calls.find(
-        c => (c[0] as string) === 'bun' && (c[1] as string[]).includes('-e')
+        c => (c[0] as string) === process.execPath && (c[1] as string[]).includes('-e')
       ) as [string, string[], { env: NodeJS.ProcessEnv }] | undefined;
       expect(scriptCall).toBeDefined();
       // Source is byte-identical to the author's body — the payload is not interpolated.
@@ -30237,6 +30329,7 @@ describe('TokenUsage axis seam guard', () => {
     cachePartial: true,
     total: 6400,
     cost: 0.25,
+    costBreakdown: { input: 0.05, output: 0.1, cacheRead: 0.04, cacheWrite: 0.06 },
   };
 
   /**
@@ -30276,6 +30369,7 @@ describe('TokenUsage axis seam guard', () => {
     cachePartial: 'cachePartial',
     total: null,
     cost: null,
+    costBreakdown: 'costBreakdown',
   };
 
   /** Run metadata written by persistRunUsage and read back by childOutcomeFromRun. */
@@ -30287,6 +30381,7 @@ describe('TokenUsage axis seam guard', () => {
     cachePartial: 'total_cache_partial',
     total: null,
     cost: null,
+    costBreakdown: null,
   };
 
   /** Terminal telemetry props — a third spelling, remapped again inside @archon/paths. */
@@ -30298,6 +30393,7 @@ describe('TokenUsage axis seam guard', () => {
     cachePartial: 'cachePartialTokens',
     total: null,
     cost: null,
+    costBreakdown: null,
   };
 
   /**

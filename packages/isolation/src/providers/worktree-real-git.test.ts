@@ -10,7 +10,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -136,6 +136,61 @@ describe('WorktreeProvider against real git', () => {
   afterEach(() => {
     if (originalArchonHome === undefined) delete process.env.ARCHON_HOME;
     else process.env.ARCHON_HOME = originalArchonHome;
+  });
+
+  async function addLocalSubmodule(): Promise<void> {
+    const sub = join(root, 'sub-source');
+    await mkdir(sub);
+    await git(sub, 'init', '-q', '-b', 'main');
+    await git(sub, 'config', 'user.email', 'test@example.com');
+    await git(sub, 'config', 'user.name', 'Archon Test');
+    await git(sub, 'config', 'commit.gpgsign', 'false');
+    await writeFile(join(sub, 'file.txt'), 'source\n');
+    await git(sub, 'add', '.');
+    await git(sub, 'commit', '-qm', 'submodule source');
+    await git(repoPath, 'checkout', '-q', TASK_BRANCH);
+    await git(repoPath, '-c', 'protocol.file.allow=always', 'submodule', 'add', sub, 'sub');
+    await git(repoPath, 'commit', '-qam', 'register submodule');
+    await git(repoPath, 'checkout', '-q', 'main');
+  }
+
+  test('ordinary cleanup removes a clean populated submodule after safe deinit', async () => {
+    await addLocalSubmodule();
+    await git(repoPath, 'worktree', 'add', '-q', worktreePath, TASK_BRANCH);
+    await git(worktreePath, '-c', 'protocol.file.allow=always', 'submodule', 'update', '--init');
+    expect(existsSync(join(worktreePath, 'sub', 'file.txt'))).toBe(true);
+
+    const result = await provider.destroy(worktreePath, {
+      canonicalRepoPath: toRepoPath(repoPath),
+    });
+    expect(result.worktreeRemoved).toBe(true);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(await registeredWorktrees()).not.toContain(resolve(worktreePath));
+  });
+
+  test('ordinary cleanup keeps dirty submodules and the worktree intact', async () => {
+    await addLocalSubmodule();
+    await git(repoPath, 'worktree', 'add', '-q', worktreePath, TASK_BRANCH);
+    await git(worktreePath, '-c', 'protocol.file.allow=always', 'submodule', 'update', '--init');
+    await writeFile(join(worktreePath, 'sub', 'untracked.txt'), 'preserve\n');
+
+    await expect(
+      provider.destroy(worktreePath, { canonicalRepoPath: toRepoPath(repoPath) })
+    ).rejects.toThrow(/populated submodules or the worktree have changes/);
+    expect(existsSync(join(worktreePath, 'sub', 'untracked.txt'))).toBe(true);
+    expect(await registeredWorktrees()).toContain(resolve(worktreePath));
+  });
+
+  test('ordinary cleanup retains a partially missing submodule checkout', async () => {
+    await addLocalSubmodule();
+    await git(repoPath, 'worktree', 'add', '-q', worktreePath, TASK_BRANCH);
+    await git(worktreePath, '-c', 'protocol.file.allow=always', 'submodule', 'update', '--init');
+    await rm(join(worktreePath, 'sub'), { recursive: true });
+
+    await expect(
+      provider.destroy(worktreePath, { canonicalRepoPath: toRepoPath(repoPath) })
+    ).rejects.toThrow(/populated submodules or the worktree have changes/);
+    expect(await registeredWorktrees()).toContain(resolve(worktreePath));
   });
 
   test('a setup failure after `git worktree add` leaves nothing for the next run to adopt', async () => {

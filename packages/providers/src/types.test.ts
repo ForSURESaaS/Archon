@@ -2,6 +2,29 @@ import { describe, expect, test } from 'bun:test';
 import { mergeTokenUsage, type TokenUsage } from './types';
 
 describe('mergeTokenUsage', () => {
+  test('keeps provider-priced input/output/cache axes separate and refuses incomplete breakdowns', () => {
+    const first = {
+      input: 100,
+      output: 20,
+      cacheRead: 70,
+      cacheWrite: 10,
+      costBreakdown: { input: 0.00004, output: 0.0002, cacheRead: 0.000014, cacheWrite: 0.000025 },
+    };
+    const second = {
+      input: 200,
+      output: 30,
+      cacheRead: 150,
+      cacheWrite: 20,
+      costBreakdown: { input: 0.00006, output: 0.0003, cacheRead: 0.00003, cacheWrite: 0.00005 },
+    };
+    expect(mergeTokenUsage([first, second])?.costBreakdown).toEqual({
+      input: 0.0001,
+      output: 0.0005,
+      cacheRead: 0.000044,
+      cacheWrite: 0.00007500000000000001,
+    });
+    expect(mergeTokenUsage([first, { input: 1, output: 2 }])?.costBreakdown).toBeUndefined();
+  });
   test('returns undefined for no contributions', () => {
     expect(mergeTokenUsage([])).toBeUndefined();
   });

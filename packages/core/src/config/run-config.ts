@@ -29,6 +29,10 @@ const keyClassifications = {
   assistant: { kind: 'runtime' },
   defaultAssistant: { kind: 'runtime' },
   assistants: { kind: 'runtime' },
+  audio: {
+    kind: 'unavailable',
+    reason: 'speech synthesis is process-scoped and has no workflow run consumer',
+  },
   aliases: { kind: 'runtime' },
   tiers: { kind: 'runtime' },
   workflows: { kind: 'runtime' },

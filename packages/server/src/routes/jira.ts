@@ -21,6 +21,7 @@ import {
   jiraPrCommentsResponseSchema,
   jiraQueueResponseSchema,
   jiraReconcileResponseSchema,
+  jiraResumeResponseSchema,
   jiraTransitionRequestSchema,
 } from './schemas/jira.schemas';
 
@@ -576,6 +577,41 @@ export function registerJiraRoutes(app: OpenAPIHono, dispatcher: JiraDispatcher)
   app.openapi(
     createRoute({
       method: 'post',
+      path: '/api/codebases/{id}/jira/jobs/{jobId}/resume',
+      request: { params: jobParamsSchema },
+      responses: {
+        202: {
+          description: 'Effective Jira workflow run resumed',
+          content: { 'application/json': { schema: jiraResumeResponseSchema } },
+        },
+        409: {
+          description: 'Jira job could not be resumed',
+          content: { 'application/json': { schema: errorSchema } },
+        },
+      },
+    }),
+    async c => {
+      const { id, jobId } = c.req.valid('param');
+      try {
+        const userId = authorizedUsers.get(c.req.raw) ?? '';
+        const job = await dispatcher.resumeJob(id, jobId, userId || undefined);
+        return c.json(
+          {
+            jobId: job.id,
+            runId: job.workflowRunId ?? '',
+            status: job.status,
+          },
+          202
+        );
+      } catch (error) {
+        return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
+      }
+    }
+  );
+
+  app.openapi(
+    createRoute({
+      method: 'post',
       path: '/api/codebases/{id}/jira/jobs/{jobId}/retry-correction',
       request: { params: jobParamsSchema },
       responses: {
@@ -704,8 +740,10 @@ export function registerJiraRoutes(app: OpenAPIHono, dispatcher: JiraDispatcher)
             prUrl: string | null;
             conflictDetail: string | null;
           };
+          const resumeEligibility = await dispatcher.getResumeEligibility(id, job.id);
           return {
             ...job,
+            resumeEligibility,
             telemetry: job.workflowRunId ? await getRunTelemetry(job.workflowRunId) : null,
           };
         })

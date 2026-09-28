@@ -378,6 +378,17 @@ describe('cleanup-service', () => {
   });
 
   describe('removeEnvironment', () => {
+    test('keeps a missing-path environment when a run claims it before destroy', async () => {
+      mockGetById.mockResolvedValueOnce(makeEnvironment());
+      mockGetCodebase.mockResolvedValueOnce(makeCodebase());
+      mockGetLiveRunOwningEnv.mockResolvedValueOnce({ id: 'run-claimed', status: 'paused' });
+
+      const result = await removeEnvironment('env-1');
+      expect(result.skippedReason).toBe('run run-clai is paused');
+      expect(mockDestroy).not.toHaveBeenCalled();
+      expect(mockUpdateStatus).not.toHaveBeenCalled();
+    });
+
     test('calls destroy with canonicalRepoPath even when directory is missing', async () => {
       const envId = 'env-missing-dir';
 

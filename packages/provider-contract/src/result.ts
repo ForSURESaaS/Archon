@@ -22,6 +22,15 @@ export const tokenUsageSchema = z.object({
   /** Total of gross input, output, and any provider-reported reasoning tokens. */
   total: z.number().optional(),
   cost: z.number().optional(),
+  /** Provider-priced USD components; absent for older runs or unsupported providers. */
+  costBreakdown: z
+    .object({
+      input: z.number(),
+      output: z.number(),
+      cacheRead: z.number(),
+      cacheWrite: z.number(),
+    })
+    .optional(),
 });
 export type TokenUsage = z.infer<typeof tokenUsageSchema>;
 

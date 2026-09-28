@@ -70,6 +70,7 @@ nodes:
     runtime: bun
     depends_on: [implement]
     with:
+      done: "$implement.output.done"
       green: "$implement.output.green"
       red_cause: "$implement.output.red_cause"
       summary: "$implement.output.summary"
