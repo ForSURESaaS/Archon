@@ -9,9 +9,11 @@ import * as userDb from '@archon/core/db/users';
 import * as workflowDb from '@archon/core/db/workflows';
 import * as workflowEventDb from '@archon/core/db/workflow-events';
 import { acceptStartReceipt, getStartReceipt } from '@archon/core/db/resource-starts';
+import { isRunOwnerAnswering } from '@archon/core/services/run-live-owner';
 import { getTerminalRecord } from '@archon/workflows/terminal-record';
 import type { ServerResourceStartHost } from './resource-start-hosting';
 import { JiraClient, jiraCredentialsFromEnv, type JiraIssue } from './jira-client';
+import { resumeWorkflowRunFromServer } from './workflow-resume-service';
 
 const log = createLogger('jira-dispatcher');
 const SCAN_INTERVAL_MS = 5_000;
@@ -307,7 +309,7 @@ export class JiraDispatcher {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => void this.scan(), SCAN_INTERVAL_MS);
-    void this.scan();
+    void this.recoverOrphanedRuns().finally(() => void this.scan());
   }
 
   stop(): void {
@@ -322,6 +324,45 @@ export class JiraDispatcher {
   async configurationChanged(codebaseId: string): Promise<void> {
     this.snapshots.delete(codebaseId);
     await this.resourceHost.requestDrain();
+  }
+
+  private async recoverOrphanedRuns(): Promise<void> {
+    for (const job of await jiraQueueDb.listOpenJiraJobs()) {
+      if (job.status !== 'running') continue;
+      const runId = await jiraQueueDb.reconcileJiraJobRunLineage(job.id);
+      if (!runId) continue;
+      let run = await workflowDb.getWorkflowRun(runId);
+      if (run?.status !== 'running' || (await isRunOwnerAnswering(run.id))) continue;
+
+      try {
+        await workflowDb.failWorkflowRun(
+          run.id,
+          'Execution owner stopped before the workflow finalized. Recovering Jira run automatically.',
+          { exitReason: 'not_finalized' }
+        );
+        run = await workflowDb.getWorkflowRun(run.id);
+        if (!run) continue;
+        const resumed = await resumeWorkflowRunFromServer(run, run.user_id ?? undefined, {
+          kind: 'headless',
+        });
+        if (!resumed) {
+          log.warn(
+            { runId: run.id, jobId: job.id, issueKey: job.issueKey },
+            'jira.orphaned_run_auto_resume_refused'
+          );
+          continue;
+        }
+        log.info(
+          { runId: run.id, jobId: job.id, issueKey: job.issueKey },
+          'jira.orphaned_run_auto_resumed'
+        );
+      } catch (error) {
+        log.error(
+          { err: error as Error, runId, jobId: job.id, issueKey: job.issueKey },
+          'jira.orphaned_run_auto_resume_failed'
+        );
+      }
+    }
   }
 
   async getSnapshot(codebaseId: string, force = false): Promise<JiraQueueSnapshot> {
