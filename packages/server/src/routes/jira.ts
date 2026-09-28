@@ -215,9 +215,14 @@ async function getRunTelemetry(runId: string): Promise<JiraRunTelemetry | null> 
       ? graph.node_ids.filter((id: unknown): id is string => typeof id === 'string')
       : [];
   const nodes = terminalNodeIds(events);
-  const remaining = Math.max(0, nodeIds.length - nodes.completed.size);
-  const averageSeconds =
-    nodes.completed.size > 0 ? nodes.durationMs / nodes.completed.size / 1000 : null;
+  const completed =
+    nodeIds.length > 0
+      ? nodeIds.filter(nodeId => nodes.completed.has(nodeId)).length
+      : nodes.completed.size;
+  const total = nodeIds.length > 0 ? nodeIds.length : nodes.completed.size;
+  const remaining = Math.max(0, total - completed);
+  const elapsedSeconds = Math.max(0, (Date.now() - new Date(run.started_at).getTime()) / 1000);
+  const averageSeconds = completed > 0 ? elapsedSeconds / completed : null;
   return {
     runStatus: run.status,
     startedAt: new Date(run.started_at).toISOString(),
@@ -227,8 +232,8 @@ async function getRunTelemetry(runId: string): Promise<JiraRunTelemetry | null> 
     costUsd: readFiniteNonnegative(run.metadata.total_cost_usd) ?? 0,
     models: [...models.entries()].map(([model, values]) => ({ model, ...values })),
     progress: {
-      completed: nodes.completed.size,
-      total: nodeIds.length,
+      completed,
+      total,
       active: [...nodes.active],
       etaSeconds:
         run.status === 'running' && averageSeconds !== null
