@@ -50,6 +50,14 @@ export const jiraQueueConfigSchema = z
       })
       .strict(),
     workflow: z.string().min(1).default('archon-deliver'),
+    cost_factors: z
+      .object({
+        okay: z.number().finite().min(1).default(1),
+        minimal_correction: z.number().finite().min(1).default(2),
+        poor: z.number().finite().min(1).default(3),
+      })
+      .strict()
+      .default({ okay: 1, minimal_correction: 2, poor: 3 }),
   })
   .strict()
   .openapi('JiraQueueConfig');
@@ -207,8 +215,21 @@ export const jiraIssueDetailResponseSchema = z
   })
   .openapi('JiraIssueDetailResponse');
 
+export const jiraIssueRatingSchema = z.enum(['okay', 'minimal_correction', 'poor']);
+
+export const jiraIssueCostSchema = z.object({
+  issueId: z.string(),
+  issueKey: z.string(),
+  rating: jiraIssueRatingSchema.nullable(),
+  ratedAt: z.string().nullable(),
+  costUsd: z.number().nullable(),
+  runCount: z.number().int().nonnegative(),
+  startedAt: z.string(),
+  completedAt: z.string().nullable(),
+});
+
 export const jiraTransitionRequestSchema = z
-  .object({ transitionId: z.string().regex(/^\d+$/) })
+  .object({ transitionId: z.string().regex(/^\d+$/), rating: jiraIssueRatingSchema.optional() })
   .strict()
   .openapi('JiraTransitionRequest');
 

@@ -3831,6 +3831,55 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/codebases/{id}/jira/costs': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Raw per-ticket costs and manual-test ratings */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              issues: {
+                issueId: string;
+                issueKey: string;
+                /** @enum {string|null} */
+                rating: 'okay' | 'minimal_correction' | 'poor' | null;
+                ratedAt: string | null;
+                costUsd: number | null;
+                runCount: number;
+                startedAt: string;
+                completedAt: string | null;
+              }[];
+            };
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/codebases/{id}/jira/issues': {
     parameters: {
       query?: never;
@@ -6007,6 +6056,21 @@ export interface components {
       };
       /** @default archon-deliver */
       workflow: string;
+      /**
+       * @default {
+       *       "okay": 1,
+       *       "minimal_correction": 2,
+       *       "poor": 3
+       *     }
+       */
+      cost_factors: {
+        /** @default 1 */
+        okay: number;
+        /** @default 2 */
+        minimal_correction: number;
+        /** @default 3 */
+        poor: number;
+      };
     };
     JiraIssueDetailResponse: {
       issue: {
@@ -6061,6 +6125,8 @@ export interface components {
     };
     JiraTransitionRequest: {
       transitionId: string;
+      /** @enum {string} */
+      rating?: 'okay' | 'minimal_correction' | 'poor';
     };
     JiraReconcileResponse: {
       jobId: string;

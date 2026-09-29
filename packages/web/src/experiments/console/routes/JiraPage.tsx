@@ -257,6 +257,7 @@ export function JiraPage(): ReactElement {
   const [detailLoading, setDetailLoading] = useState(false);
   const [transitionBusy, setTransitionBusy] = useState(false);
   const [completionArmed, setCompletionArmed] = useState<string | null>(null);
+  const [completionRating, setCompletionRating] = useState<skill.JiraIssueRating>('okay');
   const [completionReady, setCompletionReady] = useState(false);
 
   useEffect(() => {
@@ -347,12 +348,17 @@ export function JiraPage(): ReactElement {
     }
   };
 
-  const transitionIssue = async (issueKey: string, transitionId: string): Promise<void> => {
+  const transitionIssue = async (
+    issueKey: string,
+    transitionId: string,
+    rating?: skill.JiraIssueRating
+  ): Promise<void> => {
     setTransitionBusy(true);
     setMessage(null);
     try {
-      setSelectedIssue(await skill.transitionJiraIssue(projectId, issueKey, transitionId));
+      setSelectedIssue(await skill.transitionJiraIssue(projectId, issueKey, transitionId, rating));
       invalidate(queueKey);
+      invalidate(`jira-costs:${projectId}`);
       setCompletionArmed(null);
       setCompletionReady(false);
     } catch (error) {
@@ -496,6 +502,30 @@ export function JiraPage(): ReactElement {
                 }}
               />
             </label>
+            {(
+              [
+                ['okay', 'Okay'],
+                ['minimal_correction', 'Minimal correction'],
+                ['poor', 'Poor commit'],
+              ] as const
+            ).map(([rating, label]) => (
+              <label key={rating} className="grid gap-1 text-xs text-text-secondary">
+                {label} effective-cost factor
+                <input
+                  type="number"
+                  min="1"
+                  step="0.1"
+                  value={draft.cost_factors[rating]}
+                  onChange={event => {
+                    setDraft({
+                      ...draft,
+                      cost_factors: { ...draft.cost_factors, [rating]: Number(event.target.value) },
+                    });
+                  }}
+                  className="rounded border border-border bg-surface px-2 py-1.5 text-text-primary"
+                />
+              </label>
+            ))}
             <label className="grid gap-1 text-xs text-text-secondary md:col-span-2">
               Concurrency: {draft.automation.concurrency}
               <input
@@ -724,46 +754,65 @@ export function JiraPage(): ReactElement {
                             </button>
                           ) : null}
                           {status === 'MANUAL TEST' ? (
-                            <button
-                              type="button"
-                              disabled={
-                                transitionBusy ||
-                                (completionArmed === issue.key && !completionReady)
-                              }
-                              className="rounded bg-success px-2 py-1 font-semibold text-white disabled:opacity-50"
-                              onClick={() => {
-                                if (completionArmed !== issue.key) {
-                                  setCompletionArmed(issue.key);
-                                  setCompletionReady(false);
-                                  return;
-                                }
-                                const configuredDone =
-                                  configState.data?.config.workflow_states.done ?? ARCHIVE_STATUS;
-                                void (async (): Promise<void> => {
-                                  const detail = await skill.getJiraIssue(projectId, issue.key);
-                                  const transition = detail.transitions.find(
-                                    item =>
-                                      item.destination.toUpperCase() ===
-                                        configuredDone.toUpperCase() ||
-                                      item.name.toUpperCase() === configuredDone.toUpperCase()
-                                  );
-                                  if (!transition) {
-                                    setMessage(
-                                      `Jira does not currently offer a transition to ${configuredDone}.`
-                                    );
-                                    setCompletionArmed(null);
-                                    return;
-                                  }
-                                  await transitionIssue(issue.key, transition.id);
-                                })();
-                              }}
+                            <div
+                              className="flex flex-wrap gap-1"
+                              aria-label={`Rate ${issue.key} and mark development done`}
                             >
-                              {completionArmed !== issue.key
-                                ? 'Mark development done'
-                                : completionReady
-                                  ? 'Confirm done'
-                                  : 'Wait 2 seconds…'}
-                            </button>
+                              {(
+                                [
+                                  ['okay', 'Mark development done'],
+                                  ['minimal_correction', 'Done · minimal correction'],
+                                  ['poor', 'Done · poor commit'],
+                                ] as const
+                              ).map(([rating, label]) => (
+                                <button
+                                  key={rating}
+                                  type="button"
+                                  disabled={
+                                    transitionBusy ||
+                                    (completionArmed === issue.key && !completionReady)
+                                  }
+                                  className={`rounded px-2 py-1 font-semibold text-white disabled:opacity-50 ${rating === 'poor' ? 'bg-error' : rating === 'minimal_correction' ? 'bg-warning' : 'bg-success'}`}
+                                  onClick={() => {
+                                    if (
+                                      completionArmed !== issue.key ||
+                                      completionRating !== rating
+                                    ) {
+                                      setCompletionRating(rating);
+                                      setCompletionArmed(issue.key);
+                                      setCompletionReady(false);
+                                      return;
+                                    }
+                                    const configuredDone =
+                                      configState.data?.config.workflow_states.done ??
+                                      ARCHIVE_STATUS;
+                                    void (async (): Promise<void> => {
+                                      const detail = await skill.getJiraIssue(projectId, issue.key);
+                                      const transition = detail.transitions.find(
+                                        item =>
+                                          item.destination.toUpperCase() ===
+                                            configuredDone.toUpperCase() ||
+                                          item.name.toUpperCase() === configuredDone.toUpperCase()
+                                      );
+                                      if (!transition) {
+                                        setMessage(
+                                          `Jira does not currently offer a transition to ${configuredDone}.`
+                                        );
+                                        setCompletionArmed(null);
+                                        return;
+                                      }
+                                      await transitionIssue(issue.key, transition.id, rating);
+                                    })();
+                                  }}
+                                >
+                                  {completionArmed !== issue.key || completionRating !== rating
+                                    ? label
+                                    : completionReady
+                                      ? `Confirm ${label.toLowerCase()}`
+                                      : 'Wait 2 seconds…'}
+                                </button>
+                              ))}
+                            </div>
                           ) : null}
                           {job?.workflowRunId ? (
                             <Link
@@ -1020,7 +1069,15 @@ export function JiraPage(): ReactElement {
                       disabled={transitionBusy}
                       className="rounded border border-border px-3 py-1.5 text-xs hover:bg-surface-hover disabled:opacity-50"
                       onClick={() => {
-                        void transitionIssue(selectedIssue.issue.key, transition.id);
+                        const done =
+                          configState.data?.config.workflow_states.done ?? ARCHIVE_STATUS;
+                        void transitionIssue(
+                          selectedIssue.issue.key,
+                          transition.id,
+                          transition.destination.toUpperCase() === done.toUpperCase()
+                            ? 'okay'
+                            : undefined
+                        );
                       }}
                     >
                       {transition.name} → {transition.destination}

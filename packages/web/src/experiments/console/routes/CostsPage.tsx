@@ -8,11 +8,15 @@ import * as skill from '../skills';
 import type { Run } from '../primitives/run';
 import { runDisplayText } from '../primitives/run';
 
-type Range = '24h' | '7d' | '30d' | 'all';
+type Range = '24h' | '7d' | '30d' | '90d' | '365d' | 'all';
+type TicketFilter = 'all' | 'rated' | 'unrated' | skill.JiraIssueRating;
+const DEFAULT_FACTORS = { okay: 1, minimal_correction: 2, poor: 3 };
 const RANGE_MS: Record<Exclude<Range, 'all'>, number> = {
   '24h': 86_400_000,
   '7d': 7 * 86_400_000,
   '30d': 30 * 86_400_000,
+  '90d': 90 * 86_400_000,
+  '365d': 365 * 86_400_000,
 };
 
 const paid = (run: Run): run is Run & { costUsd: number } =>
@@ -64,9 +68,67 @@ export function cacheReadRate(grossInput: number, cacheRead: number): number | n
   return grossInput > 0 ? cacheRead / grossInput : null;
 }
 
+export function effectiveTicketCost(
+  ticket: skill.JiraIssueCost,
+  factors: typeof DEFAULT_FACTORS
+): number | null {
+  return ticket.costUsd === null
+    ? null
+    : ticket.costUsd * (ticket.rating ? factors[ticket.rating] : 1);
+}
+
+export function selectTickets(
+  tickets: skill.JiraIssueCost[],
+  cutoff: number,
+  filter: TicketFilter
+): skill.JiraIssueCost[] {
+  return tickets.filter(ticket => {
+    const date = Date.parse(ticket.ratedAt ?? ticket.completedAt ?? ticket.startedAt);
+    return (
+      Number.isFinite(date) &&
+      date >= cutoff &&
+      (filter === 'all' ||
+        (filter === 'rated' && ticket.rating !== null) ||
+        (filter === 'unrated' && ticket.rating === null) ||
+        ticket.rating === filter)
+    );
+  });
+}
+
 export function CostsPage(): ReactElement {
   const { projectId = '' } = useParams<{ projectId: string }>();
   const [range, setRange] = useState<Range>('30d');
+  const [ticketFilter, setTicketFilter] = useState<TicketFilter>('all');
+  const {
+    data: ticketData,
+    loading: ticketsLoading,
+    error: ticketsError,
+  } = useEntity<skill.JiraIssueCost[]>(
+    `jira-costs:${projectId}`,
+    async () => (await skill.getJiraIssueCosts(projectId)).issues
+  );
+  const { data: jiraConfig } = useEntity<skill.JiraConfigState>(`jira-config:${projectId}`, () =>
+    skill.getJiraConfig(projectId)
+  );
+  const factors = jiraConfig?.config.cost_factors ?? DEFAULT_FACTORS;
+  const tickets = selectTickets(
+    ticketData ?? [],
+    range === 'all' ? 0 : Date.now() - RANGE_MS[range],
+    ticketFilter
+  );
+  const meteredTickets = tickets.filter(ticket => ticket.costUsd !== null);
+  const ticketSpend = meteredTickets.reduce((sum, ticket) => sum + (ticket.costUsd ?? 0), 0);
+  const ratings = {
+    okay: tickets.filter(ticket => ticket.rating === 'okay').length,
+    minimal_correction: tickets.filter(ticket => ticket.rating === 'minimal_correction').length,
+    poor: tickets.filter(ticket => ticket.rating === 'poor').length,
+    unrated: tickets.filter(ticket => ticket.rating === null).length,
+  };
+  const effectiveSpend = meteredTickets.reduce(
+    (sum, ticket) => sum + (effectiveTicketCost(ticket, factors) ?? 0),
+    0
+  );
+  const ticketAverage = meteredTickets.length > 0 ? ticketSpend / meteredTickets.length : 0;
   const [budget, setBudget] = useState<skill.DailyBudgetStatus | null>(null);
   const [limitInput, setLimitInput] = useState('');
   const [creditInput, setCreditInput] = useState('');
@@ -96,7 +158,6 @@ export function CostsPage(): ReactElement {
   const runs = useMemo(() => requests.filter(paid), [requests]);
   const unmeteredCount = requests.length - runs.length;
   const total = runs.reduce((sum, run) => sum + (run.costUsd ?? 0), 0);
-  const average = runs.length > 0 ? total / runs.length : 0;
   // Token telemetry is independent of USD cost availability. Pi and Codex can
   // report usage without reporting a price, so include every top-level request.
   const { tokensIn, tokensOut, cacheRead } = aggregateTokenUsage(requests);
@@ -164,7 +225,7 @@ export function CostsPage(): ReactElement {
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
         <ProjectViewTabs projectId={projectId} active="costs" />
         <div className="flex items-center gap-1">
-          {(['24h', '7d', '30d', 'all'] as const).map(value => (
+          {(['24h', '7d', '30d', '90d', '365d', 'all'] as const).map(value => (
             <button
               key={value}
               type="button"
@@ -190,7 +251,7 @@ export function CostsPage(): ReactElement {
             <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {[
                 ['Provider-reported spend', formatCost(total)],
-                ['Average / request', formatCost(average)],
+                ['Average / ticket/task', meteredTickets.length ? formatCost(ticketAverage) : '—'],
                 ['Cost coverage', `${String(runs.length)}/${String(requests.length)} requests`],
                 [
                   'Completed efficiency',
@@ -211,6 +272,106 @@ export function CostsPage(): ReactElement {
                 because the provider did not report a cost.
               </p>
             ) : null}
+
+            <section className="rounded-xl border border-border bg-surface p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold">Effective ticket/task costs</h2>
+                  <p className="mt-1 text-xs text-text-tertiary">
+                    All attached initial, correction and recovery runs count once per ticket.
+                    Factors apply at display time; unreviewed tickets use ×1 and are labeled
+                    unrated. This is an effort-adjusted estimate, not a billing amount.
+                  </p>
+                </div>
+                <select
+                  value={ticketFilter}
+                  onChange={event => {
+                    setTicketFilter(event.target.value as TicketFilter);
+                  }}
+                  className="rounded border border-border bg-surface-elevated px-2 py-1 text-xs"
+                  aria-label="Filter ticket ratings"
+                >
+                  <option value="all">All ratings</option>
+                  <option value="rated">Rated</option>
+                  <option value="unrated">Unrated</option>
+                  <option value="okay">Okay</option>
+                  <option value="minimal_correction">Minimal correction</option>
+                  <option value="poor">Poor commit</option>
+                </select>
+              </div>
+              {ticketsError ? (
+                <p className="mt-3 text-xs text-error">{ticketsError.message}</p>
+              ) : null}
+              {ticketsLoading ? (
+                <p className="mt-3 text-xs text-text-secondary">Loading ticket ledger…</p>
+              ) : null}
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                <div className="rounded border border-border p-2 text-xs">
+                  Raw ticket spend{' '}
+                  <strong className="block font-mono text-lg">{formatCost(ticketSpend)}</strong>
+                </div>
+                <div className="rounded border border-border p-2 text-xs">
+                  Effective ticket spend{' '}
+                  <strong className="block font-mono text-lg">{formatCost(effectiveSpend)}</strong>
+                </div>
+                <div className="rounded border border-border p-2 text-xs">
+                  Tracked / metered{' '}
+                  <strong className="block font-mono text-lg">
+                    {tickets.length} / {meteredTickets.length}
+                  </strong>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs text-text-secondary">
+                <span>Okay: {ratings.okay}</span>
+                <span>Minimal correction: {ratings.minimal_correction}</span>
+                <span>Poor: {ratings.poor}</span>
+                <span>Unrated: {ratings.unrated}</span>
+                <span className="text-text-tertiary">
+                  Factors: ×{factors.okay} / ×{factors.minimal_correction} / ×{factors.poor}; edit
+                  on the Jira configuration page.
+                </span>
+              </div>
+              <div className="mt-3 overflow-x-auto">
+                <div className="min-w-[720px] text-xs">
+                  <div className="grid grid-cols-[120px_130px_90px_1fr_110px_110px] gap-3 border-b border-border pb-2 text-text-tertiary">
+                    <span>Ticket</span>
+                    <span>Review date</span>
+                    <span>Runs</span>
+                    <span>Rating</span>
+                    <span>Raw USD</span>
+                    <span>Effective USD</span>
+                  </div>
+                  {tickets.map(ticket => (
+                    <div
+                      key={ticket.issueId}
+                      className="grid grid-cols-[120px_130px_90px_1fr_110px_110px] gap-3 border-b border-border/50 py-2 font-mono tabular-nums"
+                    >
+                      <span>{ticket.issueKey}</span>
+                      <span>
+                        {new Date(
+                          ticket.ratedAt ?? ticket.completedAt ?? ticket.startedAt
+                        ).toLocaleDateString()}
+                      </span>
+                      <span>{ticket.runCount}</span>
+                      <span>
+                        {ticket.rating ?? 'unrated'} · ×{ticket.rating ? factors[ticket.rating] : 1}
+                      </span>
+                      <span>
+                        {ticket.costUsd === null ? 'not reported' : formatCost(ticket.costUsd)}
+                      </span>
+                      <span>
+                        {effectiveTicketCost(ticket, factors) === null
+                          ? 'not reported'
+                          : formatCost(effectiveTicketCost(ticket, factors) ?? 0)}
+                      </span>
+                    </div>
+                  ))}
+                  {!ticketsLoading && tickets.length === 0 ? (
+                    <p className="py-3 text-text-tertiary">No tracked tickets in this view.</p>
+                  ) : null}
+                </div>
+              </div>
+            </section>
 
             <section className="rounded-xl border border-border bg-surface p-4">
               <div className="flex flex-wrap items-start justify-between gap-4">

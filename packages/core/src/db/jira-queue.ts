@@ -1,4 +1,4 @@
-import { pool, getDatabase, getDialect } from './connection';
+import { pool, getDatabase, getDatabaseType, getDialect } from './connection';
 import { lockConfiguredResourceSlot } from './resource-slots';
 
 export function jiraResourceKey(codebaseId: string): string {
@@ -12,6 +12,20 @@ export type JiraJobStatus =
   | 'succeeded'
   | 'failed'
   | 'conflicted';
+
+export type JiraIssueRating = 'okay' | 'minimal_correction' | 'poor';
+
+export const DEFAULT_JIRA_COST_FACTORS = {
+  okay: 1,
+  minimal_correction: 2,
+  poor: 3,
+} as const;
+
+export interface JiraCostFactors {
+  okay: number;
+  minimal_correction: number;
+  poor: number;
+}
 
 export interface JiraQueueConfig {
   url: string;
@@ -46,6 +60,25 @@ export interface JiraQueueConfig {
     ticket_pattern: string;
   };
   workflow: string;
+  cost_factors?: JiraCostFactors;
+}
+
+export interface JiraIssueRatingRecord {
+  issueId: string;
+  issueKey: string;
+  rating: JiraIssueRating;
+  ratedAt: string;
+}
+
+export interface JiraIssueCostRecord {
+  issueId: string;
+  issueKey: string;
+  rating: JiraIssueRating | null;
+  ratedAt: string | null;
+  costUsd: number | null;
+  runCount: number;
+  startedAt: string;
+  completedAt: string | null;
 }
 
 export interface JiraConfigRecord {
@@ -319,6 +352,89 @@ export async function reconcileJiraJobRunLineage(jobId: string): Promise<string 
     current = next;
   }
   return current;
+}
+
+export async function getJiraIssueRating(
+  codebaseId: string,
+  issueId: string
+): Promise<JiraIssueRatingRecord | null> {
+  const result = await pool.query<Record<string, unknown>>(
+    `SELECT issue_id, issue_key, rating, rated_at FROM remote_agent_jira_issue_ratings
+     WHERE codebase_id = $1 AND issue_id = $2`,
+    [codebaseId, issueId]
+  );
+  const row = result.rows[0];
+  return row
+    ? {
+        issueId: String(row.issue_id),
+        issueKey: String(row.issue_key),
+        rating: row.rating as JiraIssueRating,
+        ratedAt: row.rated_at instanceof Date ? row.rated_at.toISOString() : String(row.rated_at),
+      }
+    : null;
+}
+
+export async function rateJiraIssue(
+  codebaseId: string,
+  issueId: string,
+  issueKey: string,
+  rating: JiraIssueRating
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO remote_agent_jira_issue_ratings (codebase_id, issue_id, issue_key, rating)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (codebase_id, issue_id) DO UPDATE SET
+       issue_key = EXCLUDED.issue_key, rating = EXCLUDED.rating, rated_at = ${getDialect().now()}`,
+    [codebaseId, issueId, issueKey, rating]
+  );
+}
+
+/** Sum each root workflow once across all jobs/retries for one issue. Costs stay raw in storage. */
+export async function listJiraIssueCosts(codebaseId: string): Promise<JiraIssueCostRecord[]> {
+  const costField =
+    getDatabaseType() === 'postgresql'
+      ? "wr.metadata->>'total_cost_usd'"
+      : "json_extract(wr.metadata, '$.total_cost_usd')";
+  // costField is a fixed dialect-specific expression, never a user-controlled identifier.
+  const result = await pool.query<Record<string, unknown>>(
+    `SELECT j.issue_id, MAX(j.issue_key) AS issue_key,
+            MIN(j.created_at) AS started_at, MAX(j.completed_at) AS completed_at,
+            r.rating, r.rated_at,
+            COUNT(DISTINCT CASE WHEN wr.parent_run_id IS NULL THEN wr.id END) AS run_count,
+            COUNT(CASE WHEN wr.parent_run_id IS NULL AND ${costField} IS NOT NULL
+                       THEN 1 END) AS metered_runs,
+            SUM(CASE WHEN wr.parent_run_id IS NULL AND ${costField} IS NOT NULL
+                     THEN CAST(${costField} AS DOUBLE PRECISION) ELSE 0 END) AS cost_usd
+       FROM remote_agent_jira_jobs j
+       LEFT JOIN remote_agent_jira_job_runs jr ON jr.job_id = j.id
+       LEFT JOIN remote_agent_workflow_runs wr ON wr.id = jr.workflow_run_id
+       LEFT JOIN remote_agent_jira_issue_ratings r
+         ON r.codebase_id = j.codebase_id AND r.issue_id = j.issue_id
+      WHERE j.codebase_id = $1
+      GROUP BY j.issue_id, r.rating, r.rated_at`,
+    [codebaseId]
+  );
+  return result.rows.map(row => ({
+    issueId: String(row.issue_id),
+    issueKey: String(row.issue_key),
+    rating: (row.rating as JiraIssueRating | null) ?? null,
+    ratedAt:
+      row.rated_at instanceof Date
+        ? row.rated_at.toISOString()
+        : typeof row.rated_at === 'string'
+          ? row.rated_at
+          : null,
+    costUsd: Number(row.metered_runs) > 0 ? Number(row.cost_usd) : null,
+    runCount: Number(row.run_count),
+    startedAt:
+      row.started_at instanceof Date ? row.started_at.toISOString() : String(row.started_at),
+    completedAt:
+      row.completed_at instanceof Date
+        ? row.completed_at.toISOString()
+        : typeof row.completed_at === 'string'
+          ? row.completed_at
+          : null,
+  }));
 }
 
 export async function listJiraJobs(codebaseId: string): Promise<JiraJobRecord[]> {

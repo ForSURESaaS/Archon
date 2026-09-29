@@ -94,6 +94,7 @@
       "src/db/isolation-environments.test.ts",
       "src/db/messages.test.ts",
       "src/db/jira-announcements.integration.test.ts",
+      "src/db/jira-issue-costs.integration.test.ts",
       "src/db/sessions.test.ts",
       "src/db/timestamps.test.ts",
       "src/db/users.test.ts",

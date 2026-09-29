@@ -1,5 +1,15 @@
 import { describe, expect, test } from 'bun:test';
-import { jiraAccessDecision } from './jira';
+import { isRatedCompletion, jiraAccessDecision } from './jira';
+test('rated completion requires the configured done destination', () => {
+  const input = {
+    rating: 'poor' as const,
+    destination: 'DEVELOPMENT DONE',
+    configuredDone: 'DEVELOPMENT DONE',
+  };
+  expect(isRatedCompletion(input)).toBe(true);
+  expect(isRatedCompletion({ ...input, destination: 'IN PROGRESS' })).toBe(false);
+  expect(isRatedCompletion({ ...input, rating: undefined })).toBe(true);
+});
 
 describe('jiraAccessDecision', () => {
   test('allows unauthenticated solo mode only on an explicit loopback bind', () => {

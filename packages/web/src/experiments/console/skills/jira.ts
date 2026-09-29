@@ -23,6 +23,20 @@ export interface JiraQueueConfig {
   automation: { poll_interval_seconds: number; concurrency: number };
   branches: { base: string; ticket_pattern: string };
   workflow: string;
+  cost_factors: { okay: number; minimal_correction: number; poor: number };
+}
+
+export type JiraIssueRating = 'okay' | 'minimal_correction' | 'poor';
+
+export interface JiraIssueCost {
+  issueId: string;
+  issueKey: string;
+  rating: JiraIssueRating | null;
+  ratedAt: string | null;
+  costUsd: number | null;
+  runCount: number;
+  startedAt: string;
+  completedAt: string | null;
 }
 
 export interface JiraConfigState {
@@ -134,6 +148,10 @@ export function setJiraEnabled(projectId: string, enabled: boolean): Promise<{ s
   });
 }
 
+export function getJiraIssueCosts(projectId: string): Promise<{ issues: JiraIssueCost[] }> {
+  return requestJson(`${base(projectId)}/costs`);
+}
+
 export function getJiraIssues(projectId: string): Promise<JiraQueueState> {
   return requestJson(`${base(projectId)}/issues`);
 }
@@ -145,11 +163,12 @@ export function getJiraIssue(projectId: string, issueKey: string): Promise<JiraI
 export function transitionJiraIssue(
   projectId: string,
   issueKey: string,
-  transitionId: string
+  transitionId: string,
+  rating?: JiraIssueRating
 ): Promise<JiraIssueDetailState> {
   return requestJson(`${base(projectId)}/issues/${encodeURIComponent(issueKey)}/transition`, {
     method: 'POST',
-    body: JSON.stringify({ transitionId }),
+    body: JSON.stringify({ transitionId, ...(rating ? { rating } : {}) }),
   });
 }
 

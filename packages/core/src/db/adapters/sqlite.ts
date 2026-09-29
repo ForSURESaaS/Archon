@@ -899,6 +899,15 @@ export class SqliteAdapter implements IDatabase {
         UNIQUE(codebase_id, issue_id, source_revision)
       );
 
+      CREATE TABLE IF NOT EXISTS remote_agent_jira_issue_ratings (
+        codebase_id TEXT NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+        issue_id TEXT NOT NULL,
+        issue_key TEXT NOT NULL,
+        rating TEXT NOT NULL CHECK (rating IN ('okay', 'minimal_correction', 'poor')),
+        rated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (codebase_id, issue_id)
+      );
+
       CREATE TABLE IF NOT EXISTS remote_agent_jira_job_runs (
         job_id TEXT NOT NULL REFERENCES remote_agent_jira_jobs(id) ON DELETE CASCADE,
         workflow_run_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_workflow_runs(id) ON DELETE CASCADE,

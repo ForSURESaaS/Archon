@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import type { Run } from '../primitives/run';
-import { aggregateTokenUsage, cacheReadRate, selectCostRuns } from './CostsPage';
+import {
+  aggregateTokenUsage,
+  cacheReadRate,
+  effectiveTicketCost,
+  selectCostRuns,
+  selectTickets,
+} from './CostsPage';
+import type { JiraIssueCost } from '../skills/jira';
 
 function run(overrides: Partial<Run> = {}): Run {
   return {
@@ -65,6 +72,39 @@ describe('selectCostRuns', () => {
 test('cache read rate divides cached tokens by gross input without counting them twice', () => {
   expect(cacheReadRate(1000, 800)).toBe(0.8);
   expect(cacheReadRate(0, 0)).toBeNull();
+});
+
+describe('ticket cost statistics', () => {
+  const ticket: JiraIssueCost = {
+    issueId: 'issue-1',
+    issueKey: 'TEST-1',
+    rating: 'minimal_correction',
+    ratedAt: '2026-09-27T12:00:00Z',
+    costUsd: 4,
+    runCount: 3,
+    startedAt: '2026-09-24T12:00:00Z',
+    completedAt: '2026-09-27T11:00:00Z',
+  };
+  test('recalculates effective cost using current factors, not persisted factor values', () => {
+    expect(effectiveTicketCost(ticket, { okay: 1, minimal_correction: 2, poor: 3 })).toBe(8);
+    expect(effectiveTicketCost(ticket, { okay: 1, minimal_correction: 2.5, poor: 4 })).toBe(10);
+    expect(
+      effectiveTicketCost({ ...ticket, rating: null }, { okay: 1, minimal_correction: 2, poor: 3 })
+    ).toBe(4);
+    expect(
+      effectiveTicketCost({ ...ticket, costUsd: null }, { okay: 1, minimal_correction: 2, poor: 3 })
+    ).toBeNull();
+  });
+  test('filters by selected rating and review date, including unreviewed tickets', () => {
+    const unrated = { ...ticket, issueId: 'issue-2', rating: null, ratedAt: null };
+    expect(selectTickets([ticket, unrated], Date.parse('2026-09-26T00:00:00Z'), 'rated')).toEqual([
+      ticket,
+    ]);
+    expect(selectTickets([ticket, unrated], Date.parse('2026-09-26T00:00:00Z'), 'unrated')).toEqual(
+      [unrated]
+    );
+    expect(selectTickets([ticket, unrated], 0, 'unrated')).toEqual([unrated]);
+  });
 });
 
 describe('aggregateTokenUsage', () => {

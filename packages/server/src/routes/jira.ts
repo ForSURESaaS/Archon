@@ -18,6 +18,7 @@ import {
   jiraDispatchResponseSchema,
   jiraEnabledUpdateSchema,
   jiraIssueDetailResponseSchema,
+  jiraIssueCostSchema,
   jiraPrCommentsResponseSchema,
   jiraQueueResponseSchema,
   jiraReconcileResponseSchema,
@@ -29,6 +30,15 @@ const errorSchema = z.object({ error: z.string() });
 const paramsSchema = z.object({ id: z.string().min(1) });
 const issueParamsSchema = z.object({ id: z.string().min(1), key: z.string().min(1) });
 const jobParamsSchema = z.object({ id: z.string().min(1), jobId: z.string().uuid() });
+
+export function isRatedCompletion(input: {
+  rating: jiraQueueDb.JiraIssueRating | undefined;
+  destination: string;
+  configuredDone: string;
+}): boolean {
+  if (!input.rating) return true;
+  return input.destination.toUpperCase() === input.configuredDone.toUpperCase();
+}
 
 export function jiraAccessDecision(input: {
   identityRequired: boolean;
@@ -66,11 +76,15 @@ const defaultConfig: jiraQueueDb.JiraQueueConfig = {
   automation: { poll_interval_seconds: 60, concurrency: 1 },
   branches: { base: 'main', ticket_pattern: 'archon/{issue_key}' },
   workflow: 'archon-deliver',
+  cost_factors: jiraQueueDb.DEFAULT_JIRA_COST_FACTORS,
 };
 
-function withCompletionDefaults(config: jiraQueueDb.JiraQueueConfig): jiraQueueDb.JiraQueueConfig {
+function withCompletionDefaults(
+  config: jiraQueueDb.JiraQueueConfig
+): jiraQueueDb.JiraQueueConfig & { cost_factors: jiraQueueDb.JiraCostFactors } {
   return {
     ...config,
+    cost_factors: { ...jiraQueueDb.DEFAULT_JIRA_COST_FACTORS, ...config.cost_factors },
     workflow_states: {
       ...config.workflow_states,
       done_via: config.workflow_states.done_via ?? [],
@@ -432,7 +446,7 @@ export function registerJiraRoutes(app: OpenAPIHono, dispatcher: JiraDispatcher)
           credentialsConfigured: jiraCredentialsFromEnv() !== null,
           enabled: stored?.enabled ?? false,
           runAsUserId: stored?.runAsUserId ?? null,
-          config: stored ? withCompletionDefaults(stored.config) : defaultConfig,
+          config: withCompletionDefaults(stored?.config ?? defaultConfig),
           lastError: dispatcher.getLastError(id),
         },
         200
@@ -511,7 +525,7 @@ export function registerJiraRoutes(app: OpenAPIHono, dispatcher: JiraDispatcher)
     }),
     async c => {
       const { id, key } = c.req.valid('param');
-      const { transitionId } = c.req.valid('json');
+      const { transitionId, rating } = c.req.valid('json');
       const config = await jiraQueueDb.getJiraConfig(id);
       const credentials = jiraCredentialsFromEnv();
       if (!config || !credentials)
@@ -522,7 +536,23 @@ export function registerJiraRoutes(app: OpenAPIHono, dispatcher: JiraDispatcher)
         if (issueBefore.projectKey.toLowerCase() !== config.config.project.toLowerCase()) {
           return c.json({ error: 'Jira issue is outside the configured project.' }, 409);
         }
+        if (rating) {
+          const transitionsBefore = await client.listTransitions(key);
+          const selected = transitionsBefore.find(item => item.id === transitionId);
+          if (
+            !isRatedCompletion({
+              rating,
+              destination: selected?.to?.name ?? '',
+              configuredDone: config.config.workflow_states.done ?? 'DEVELOPMENT DONE',
+            })
+          ) {
+            return c.json({ error: 'A rating requires the configured done transition.' }, 409);
+          }
+        }
         await client.transitionIssueById(key, transitionId);
+        // Persist immediately after Jira accepts the transition. A subsequent refresh can
+        // fail independently; it must not lose the human review verdict.
+        if (rating) await jiraQueueDb.rateJiraIssue(id, issueBefore.id, key, rating);
         const [issue, transitions] = await Promise.all([
           client.getIssue(key),
           client.listTransitions(key),
@@ -712,6 +742,24 @@ export function registerJiraRoutes(app: OpenAPIHono, dispatcher: JiraDispatcher)
       await jiraQueueDb.setJiraEnabled(id, enabled, userId || null);
       return c.json({ success: true }, 200);
     }
+  );
+
+  app.openapi(
+    createRoute({
+      method: 'get',
+      path: '/api/codebases/{id}/jira/costs',
+      request: { params: paramsSchema },
+      responses: {
+        200: {
+          description: 'Raw per-ticket costs and manual-test ratings',
+          content: {
+            'application/json': { schema: z.object({ issues: z.array(jiraIssueCostSchema) }) },
+          },
+        },
+      },
+    }),
+    async c =>
+      c.json({ issues: await jiraQueueDb.listJiraIssueCosts(c.req.valid('param').id) }, 200)
   );
 
   app.openapi(
