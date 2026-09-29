@@ -1,5 +1,95 @@
 import { describe, expect, test } from 'bun:test';
-import { jiraAnnouncementText } from './jira-dispatcher';
+import type { JiraIssue } from './jira-client';
+import {
+  captureJiraDelivery,
+  isJiraDeliveryRoot,
+  jiraAnnouncementText,
+  workOrder,
+} from './jira-dispatcher';
+
+function issue(overrides: Partial<JiraIssue> = {}): JiraIssue {
+  return {
+    id: '100',
+    key: 'APP-1',
+    projectKey: 'APP',
+    summary: 'Parent goal',
+    description: 'Parent acceptance criteria',
+    status: 'TO DO',
+    issueType: 'Task',
+    isSubtask: false,
+    priority: null,
+    labels: [],
+    updated: '2026-09-29',
+    version: null,
+    url: 'https://example.atlassian.net/browse/APP-1',
+    parent: null,
+    subtasks: [],
+    attachments: [],
+    sourceRevision: 'parent-revision',
+    raw: {},
+    ...overrides,
+  };
+}
+
+describe('parent-owned Jira delivery', () => {
+  const child = issue({
+    id: '101',
+    key: 'APP-2',
+    summary: 'Child task',
+    description: 'Change shared files',
+    issueType: 'Sub-task',
+    isSubtask: true,
+    parent: {
+      key: 'APP-1',
+      summary: 'Parent goal',
+      status: 'TO DO',
+      issueType: 'Task',
+    },
+    sourceRevision: 'child-revision',
+  });
+  const parent = issue({
+    subtasks: [
+      {
+        key: child.key,
+        summary: child.summary,
+        status: child.status,
+        issueType: child.issueType,
+      },
+    ],
+  });
+
+  test('only roots can own a delivery', () => {
+    expect(isJiraDeliveryRoot(parent)).toBe(true);
+    expect(isJiraDeliveryRoot(child)).toBe(false);
+    expect(isJiraDeliveryRoot(issue({ ...child, parent: null }))).toBe(false);
+  });
+
+  test('fetches full child requirements and fingerprints them with the parent', async () => {
+    const getIssue = async (key: string): Promise<JiraIssue> => {
+      expect(key).toBe(child.key);
+      return child;
+    };
+    const delivery = await captureJiraDelivery({ getIssue }, parent);
+    expect(delivery.children).toEqual([child]);
+    expect(delivery.sourceRevision).toMatch(/^sha256:/);
+    expect(delivery.sourceRevision).not.toBe(parent.sourceRevision);
+    expect((await captureJiraDelivery({ getIssue }, issue())).sourceRevision).toBe(
+      'parent-revision'
+    );
+    expect(
+      workOrder(parent, delivery.children, [], { path: '/contract.json', sha256: 'hash' })
+    ).toContain('Change shared files');
+    expect(
+      workOrder(parent, delivery.children, [], { path: '/contract.json', sha256: 'hash' })
+    ).toContain('one parent PR');
+  });
+
+  test('fails closed when a child is no longer part of the parent', async () => {
+    await expect(
+      captureJiraDelivery({ getIssue: async () => issue({ ...child, parent: null }) }, parent)
+    ).rejects.toThrow('no longer a child');
+  });
+});
 
 describe('jiraAnnouncementText', () => {
   test('renders deterministic concise runtime, cost, and diff telemetry', () => {

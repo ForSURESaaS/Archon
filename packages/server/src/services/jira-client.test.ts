@@ -245,6 +245,29 @@ describe('JiraClient', () => {
     ]);
   });
 
+  test('identifies custom Jira subtask types by issue type metadata', async () => {
+    globalThis.fetch = mock(async () =>
+      Response.json({
+        issues: [
+          {
+            id: '2',
+            key: 'APP-2',
+            fields: {
+              summary: 'Child',
+              issuetype: { name: 'Custom Work', subtask: true },
+              parent: { key: 'APP-1', fields: { summary: 'Parent' } },
+            },
+          },
+        ],
+        total: 1,
+      })
+    ) as unknown as typeof fetch;
+    const client = new JiraClient(config.url, { email: 'e', apiToken: 't' });
+    const [child] = await client.searchIssues('project = "APP"');
+    expect(child?.isSubtask).toBe(true);
+    expect(child?.parent?.key).toBe('APP-1');
+  });
+
   test('paginates Jira search and keeps stable issue identity', async () => {
     let page = 0;
     globalThis.fetch = mock(async () => {

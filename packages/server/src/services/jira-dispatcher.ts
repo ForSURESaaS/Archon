@@ -191,33 +191,75 @@ export async function resumeJiraJob(
 const MAX_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_ATTACHMENTS = 10;
 
-function workOrder(
+export function isJiraDeliveryRoot(issue: JiraIssue): boolean {
+  return !issue.isSubtask && issue.parent === null;
+}
+
+export async function captureJiraDelivery(
+  client: Pick<JiraClient, 'getIssue'>,
+  issue: JiraIssue
+): Promise<{ children: JiraIssue[]; sourceRevision: string }> {
+  const children: JiraIssue[] = [];
+  const seen = new Set<string>();
+  for (const child of issue.subtasks) {
+    if (seen.has(child.key))
+      throw new Error(`Duplicate Jira subtask ${child.key} on ${issue.key}.`);
+    seen.add(child.key);
+    const full = await client.getIssue(child.key);
+    if (!full.isSubtask || full.parent?.key !== issue.key || full.id === issue.id) {
+      throw new Error(`Jira subtask ${child.key} is no longer a child of ${issue.key}.`);
+    }
+    children.push(full);
+  }
+  children.sort((left, right) => left.key.localeCompare(right.key));
+  const sourceRevision =
+    children.length === 0
+      ? issue.sourceRevision
+      : `sha256:${createHash('sha256')
+          .update(
+            JSON.stringify([
+              issue.sourceRevision,
+              ...children.map(child => [child.id, child.sourceRevision]),
+            ])
+          )
+          .digest('hex')}`;
+  return { children, sourceRevision };
+}
+
+export function workOrder(
   issue: JiraIssue,
+  children: JiraIssue[],
   imagePaths: string[],
   contractSnapshot: { path: string; sha256: string }
 ): string {
   const parent = issue.parent
     ? `Parent: ${issue.parent.key} [${issue.parent.issueType}, ${issue.parent.status}] ${issue.parent.summary}`
     : 'Parent: none';
-  const children =
-    issue.subtasks.length > 0
-      ? issue.subtasks
-          .map(child => `- ${child.key} [${child.issueType}, ${child.status}] ${child.summary}`)
+  const childWork =
+    children.length > 0
+      ? children
+          .map(
+            child =>
+              `- ${child.key} [${child.issueType}, ${child.status}] ${child.summary}\n  Requirements: ${child.description || '(none supplied)'}`
+          )
           .join('\n')
       : '(none)';
+  const siblingContext = issue.subtasks
+    .map(child => `${child.key}: ${child.summary} [${child.status}]`)
+    .join('; ');
   const attachmentListing =
-    issue.attachments.length > 0
-      ? issue.attachments
-          .map(attachment => {
-            const path = imagePaths.find(item => basename(item).startsWith(`${attachment.id}-`));
-            return `- ${attachment.filename} (${attachment.mimeType || 'unknown'}, ${attachment.size.toString()} bytes)${
-              path
-                ? ` staged at ${path}`
-                : ' not staged (only bounded image attachments are transferred)'
-            }`;
-          })
-          .join('\n')
-      : '(none)';
+    [issue, ...children]
+      .flatMap(ticket =>
+        ticket.attachments.map(attachment => {
+          const path = imagePaths.find(item => basename(item).startsWith(`${attachment.id}-`));
+          return `- ${ticket.key}: ${attachment.filename} (${attachment.mimeType || 'unknown'}, ${attachment.size.toString()} bytes)${
+            path
+              ? ` staged at ${path}`
+              : ' not staged (only bounded image attachments are transferred)'
+          }`;
+        })
+      )
+      .join('\n') || '(none)';
   return [
     `Authoritative originating contract: ${contractSnapshot.path}`,
     `Authenticated snapshot SHA-256: ${contractSnapshot.sha256}`,
@@ -231,11 +273,15 @@ function workOrder(
     `Labels: ${issue.labels.join(', ') || 'none'}`,
     parent,
     '',
-    'Subtasks:',
-    children,
-    '',
-    'Description and acceptance criteria:',
+    'Parent description and acceptance criteria:',
     issue.description || '(none supplied)',
+    '',
+    'Subtask requirements:',
+    childWork,
+    '',
+    children.length > 0
+      ? `Deliver all subtasks together on this parent branch in one implementation request and one parent PR. Plan dependencies and group work that touches the same files; retain the parent and sibling context while implementing. Siblings: ${siblingContext}. Do not open child PRs or treat individual subtask completion as parent completion.`
+      : '',
     '',
     'Attachments:',
     attachmentListing,
@@ -249,7 +295,8 @@ function workOrder(
 
 async function persistJiraContractSnapshot(
   jobId: string,
-  issue: JiraIssue
+  issue: JiraIssue,
+  children: JiraIssue[]
 ): Promise<{ path: string; sha256: string }> {
   const directory = join(getArchonHome(), 'jira-contracts', jobId);
   const path = join(directory, 'contract.json');
@@ -270,7 +317,24 @@ async function persistJiraContractSnapshot(
       priority: issue.priority,
       labels: issue.labels,
       parent: issue.parent,
-      subtasks: issue.subtasks,
+      subtasks: children.map(child => ({
+        id: child.id,
+        key: child.key,
+        url: child.url,
+        sourceRevision: child.sourceRevision,
+        summary: child.summary,
+        descriptionAndAcceptanceCriteria: child.description,
+        status: child.status,
+        issueType: child.issueType,
+        priority: child.priority,
+        labels: child.labels,
+        attachments: child.attachments.map(attachment => ({
+          id: attachment.id,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+        })),
+      })),
       attachments: issue.attachments.map(attachment => ({
         id: attachment.id,
         filename: attachment.filename,
@@ -720,6 +784,26 @@ export class JiraDispatcher {
           visibleIssues.set(issue.id, issue);
         }
       }
+      const parentKeys = new Set(
+        [...visibleIssues.values()].flatMap(issue =>
+          issue.isSubtask && issue.parent ? [issue.parent.key] : []
+        )
+      );
+      for (const key of parentKeys) {
+        if ([...visibleIssues.values()].some(issue => issue.key === key)) continue;
+        const parent = await client.getIssue(key);
+        if (
+          isJiraDeliveryRoot(parent) &&
+          parent.projectKey.toLowerCase() === config.config.project.toLowerCase() &&
+          visibleStatuses.has(parent.status) &&
+          (config.config.ticket_selection.issue_types.length === 0 ||
+            config.config.ticket_selection.issue_types.some(
+              type => type.toLowerCase() === parent.issueType.toLowerCase()
+            ))
+        ) {
+          visibleIssues.set(parent.id, parent);
+        }
+      }
       const snapshot: JiraQueueSnapshot = {
         issues: [...visibleIssues.values()].map(issue => {
           const job = latestJobs.get(issue.id);
@@ -773,6 +857,9 @@ export class JiraDispatcher {
     const snapshot = await this.getSnapshot(codebaseId, true);
     const issue = snapshot.issues.find(item => item.key.toLowerCase() === issueKey.toLowerCase());
     if (!issue) throw new Error(`Jira issue '${issueKey}' is not in the configured queue.`);
+    if (!isJiraDeliveryRoot(issue)) {
+      throw new Error(`${issue.key} is a subtask; dispatch its parent for one branch and PR.`);
+    }
     const normallyEligible = record.config.ticket_selection.eligible_statuses.some(
       status => status.toLowerCase() === issue.status.toLowerCase()
     );
@@ -788,24 +875,39 @@ export class JiraDispatcher {
     if (!normallyEligible && !retryingFailedClaim) {
       throw new Error(`${issue.key} is '${issue.status}', not an eligible queue status.`);
     }
+    const openJobs = await jiraQueueDb.listOpenJiraJobs(codebaseId);
+    if (openJobs.some(open => open.issueId === issue.id)) {
+      throw new Error(`${issue.key} already has an active parent delivery.`);
+    }
+    const client = new JiraClient(record.config.url, credentials);
+    const delivery = await captureJiraDelivery(client, issue);
     const branchName = branchFor(record.config.branches.ticket_pattern, issue.key);
     const job = await jiraQueueDb.createJiraJob({
       codebaseId,
       issueId: issue.id,
       issueKey: issue.key,
-      sourceRevision: issue.sourceRevision,
+      sourceRevision: delivery.sourceRevision,
       branchName,
       metadata: { summary: issue.summary, jiraUrl: issue.url },
     });
     if (!job)
-      throw new Error(`${issue.key} revision ${issue.sourceRevision} is already dispatched.`);
-    const client = new JiraClient(record.config.url, credentials);
+      throw new Error(`${issue.key} revision ${delivery.sourceRevision} is already dispatched.`);
     try {
       if (!retryingFailedClaim) {
         await client.transitionIssue(issue.key, record.config.workflow_states.claimed);
       }
-      const imagePaths = await this.stageImageAttachments(client, job.id, issue);
-      const contractSnapshot = await persistJiraContractSnapshot(job.id, issue);
+      const imagePaths: string[] = [];
+      for (const ticket of [issue, ...delivery.children]) {
+        imagePaths.push(
+          ...(await this.stageImageAttachments(
+            client,
+            job.id,
+            ticket,
+            MAX_IMAGE_ATTACHMENTS - imagePaths.length
+          ))
+        );
+      }
+      const contractSnapshot = await persistJiraContractSnapshot(job.id, issue, delivery.children);
       await jiraQueueDb.updateJiraJob(job.id, {
         metadata: {
           ...job.metadata,
@@ -813,7 +915,7 @@ export class JiraDispatcher {
           jiraUrl: issue.url,
           contractSnapshotPath: contractSnapshot.path,
           contractSnapshotSha256: contractSnapshot.sha256,
-          contractSourceRevision: issue.sourceRevision,
+          contractSourceRevision: delivery.sourceRevision,
         },
       });
       const userId =
@@ -838,13 +940,13 @@ export class JiraDispatcher {
         );
       }
       const receiptId = randomUUID();
-      const digest = createHash('sha256').update(issue.sourceRevision).digest('hex');
+      const digest = createHash('sha256').update(delivery.sourceRevision).digest('hex');
       const accepted = await acceptStartReceipt({
         outcome: 'matched',
         receipt: {
           id: receiptId,
           sourceInstanceId: `jira:${new URL(record.config.url).origin}`,
-          deliveryId: `${issue.id}:${issue.sourceRevision}`,
+          deliveryId: `${issue.id}:${delivery.sourceRevision}`,
           contentDigest: digest,
           receivedAt: new Date().toISOString(),
           occurredAt: issue.updated || null,
@@ -853,7 +955,7 @@ export class JiraDispatcher {
         bindings: [
           {
             bindingId: `jira:${codebaseId}:${issue.id}`,
-            bindingRevision: issue.sourceRevision,
+            bindingRevision: delivery.sourceRevision,
             hostId: this.hostId,
             runAsUserId: userId,
             resource: jiraQueueDb.jiraResourceKey(codebaseId),
@@ -864,7 +966,7 @@ export class JiraDispatcher {
               cwd: codebase.default_cwd,
               workflowName: record.config.workflow,
               inputs: {
-                work: workOrder(issue, imagePaths, contractSnapshot),
+                work: workOrder(issue, delivery.children, imagePaths, contractSnapshot),
                 errors: 'auto',
               },
               isolation: {
@@ -1237,7 +1339,8 @@ export class JiraDispatcher {
     // authenticated contract when their PR receives a later review comment.
     if (!contractSnapshotPath || !contractSnapshotSha256) {
       const issue = await client.getIssue(job.issueKey);
-      const snapshot = await persistJiraContractSnapshot(job.id, issue);
+      const delivery = await captureJiraDelivery(client, issue);
+      const snapshot = await persistJiraContractSnapshot(job.id, issue, delivery.children);
       contractSnapshotPath = snapshot.path;
       contractSnapshotSha256 = snapshot.sha256;
       await jiraQueueDb.updateJiraJob(job.id, {
@@ -1245,7 +1348,7 @@ export class JiraDispatcher {
           ...job.metadata,
           contractSnapshotPath,
           contractSnapshotSha256,
-          contractSourceRevision: issue.sourceRevision,
+          contractSourceRevision: delivery.sourceRevision,
         },
       });
     }
@@ -1373,7 +1476,8 @@ export class JiraDispatcher {
   private async stageImageAttachments(
     client: JiraClient,
     jobId: string,
-    issue: JiraIssue
+    issue: JiraIssue,
+    limit: number
   ): Promise<string[]> {
     const images = issue.attachments
       .filter(
@@ -1382,7 +1486,7 @@ export class JiraDispatcher {
           attachment.size > 0 &&
           attachment.size <= MAX_IMAGE_ATTACHMENT_BYTES
       )
-      .slice(0, MAX_IMAGE_ATTACHMENTS);
+      .slice(0, limit);
     if (images.length === 0) return [];
     const directory = join(getArchonHome(), 'jira-attachments', jobId);
     await mkdir(directory, { recursive: true });
@@ -1433,10 +1537,12 @@ export class JiraDispatcher {
         this.lastPoll.set(config.codebaseId, Date.now());
         const snapshot = await this.getSnapshot(config.codebaseId, true);
         if (snapshot.lastError || snapshot.activeJobs >= snapshot.concurrency) continue;
-        const eligible = snapshot.issues.filter(issue =>
-          config.config.ticket_selection.eligible_statuses.some(
-            status => status.toLowerCase() === issue.status.toLowerCase()
-          )
+        const eligible = snapshot.issues.filter(
+          issue =>
+            isJiraDeliveryRoot(issue) &&
+            config.config.ticket_selection.eligible_statuses.some(
+              status => status.toLowerCase() === issue.status.toLowerCase()
+            )
         );
         const free = snapshot.concurrency - snapshot.activeJobs;
         for (const issue of eligible.slice(0, free)) {

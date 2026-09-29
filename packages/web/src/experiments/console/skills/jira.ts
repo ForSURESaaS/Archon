@@ -56,6 +56,7 @@ export interface JiraIssue {
   description: string;
   status: string;
   issueType: string;
+  isSubtask: boolean;
   priority: string | null;
   labels: string[];
   updated: string;

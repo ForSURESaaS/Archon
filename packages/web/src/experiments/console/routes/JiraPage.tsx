@@ -739,7 +739,7 @@ export function JiraPage(): ReactElement {
                           </button>
                         ) : null}
                         <div className="mt-2 flex flex-wrap gap-2">
-                          {status === 'TO DO' ? (
+                          {status === 'TO DO' && !issue.isSubtask ? (
                             <button
                               type="button"
                               disabled={busy !== null}
@@ -752,6 +752,11 @@ export function JiraPage(): ReactElement {
                             >
                               {busy === issue.key ? 'Claiming…' : 'Run'}
                             </button>
+                          ) : null}
+                          {issue.isSubtask && status === 'TO DO' ? (
+                            <span className="text-xs text-text-secondary">
+                              Run the parent ticket for one PR
+                            </span>
                           ) : null}
                           {status === 'MANUAL TEST' ? (
                             <div

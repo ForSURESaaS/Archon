@@ -6081,6 +6081,7 @@ export interface components {
         description: string;
         status: string;
         issueType: string;
+        isSubtask: boolean;
         priority: string | null;
         labels: string[];
         updated: string;
@@ -6165,6 +6166,7 @@ export interface components {
       description: string;
       status: string;
       issueType: string;
+      isSubtask: boolean;
       priority: string | null;
       labels: string[];
       updated: string;

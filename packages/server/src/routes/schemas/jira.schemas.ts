@@ -94,6 +94,7 @@ export const jiraIssueSchema = z
     description: z.string(),
     status: z.string(),
     issueType: z.string(),
+    isSubtask: z.boolean(),
     priority: z.string().nullable(),
     labels: z.array(z.string()),
     updated: z.string(),

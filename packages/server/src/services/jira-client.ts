@@ -28,6 +28,7 @@ export interface JiraIssue {
   description: string;
   status: string;
   issueType: string;
+  isSubtask: boolean;
   priority: string | null;
   labels: string[];
   updated: string;
@@ -406,6 +407,10 @@ export class JiraClient {
       description: adfText(fields.description),
       status: readName(fields.status),
       issueType: readName(fields.issuetype),
+      isSubtask:
+        fields.issuetype !== null &&
+        typeof fields.issuetype === 'object' &&
+        (fields.issuetype as { subtask?: unknown }).subtask === true,
       priority: readName(fields.priority) || null,
       labels: Array.isArray(fields.labels) ? fields.labels.map(String) : [],
       updated: typeof fields.updated === 'string' ? fields.updated : '',
